@@ -52,7 +52,7 @@ class Slice()(implicit p: Parameters) extends L2Module {
   val sinkC = Module(new SinkC)
   val sourceC = Module(new SourceC)
   val grantBuf = Module(new GrantBuffer)
-  val refillBuf = Module(new MSHRBuffer(wPorts = 2))
+  val refillBuf = Module(new MSHRBuffer(wPorts = 1))
   val releaseBuf = Module(new MSHRBuffer(wPorts = 3))
 
   val prbq = Module(new ProbeQueue())
@@ -121,7 +121,6 @@ class Slice()(implicit p: Parameters) extends L2Module {
   releaseBuf.io.w(2) <> mainPipe.io.releaseBufWrite
 
   refillBuf.io.w(0) <> refillUnit.io.refillBufWrite
-  refillBuf.io.w(1) <> sinkC.io.refillBufWrite
 
   sourceC.io.in <> mainPipe.io.toSourceC
   sourceC.io.pipeStatusVec := reqArb.io.status_vec ++ mainPipe.io.status_vec_toC

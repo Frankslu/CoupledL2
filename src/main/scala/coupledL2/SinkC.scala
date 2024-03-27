@@ -40,7 +40,6 @@ class SinkC(implicit p: Parameters) extends L2Module {
     val resp = Output(new RespBundle)
     val releaseBufWrite = ValidIO(new MSHRBufWrite)
     val bufResp = Output(new PipeBufferResp)
-    val refillBufWrite = ValidIO(new MSHRBufWrite)
     val msInfo = Vec(mshrsAll, Flipped(ValidIO(new MSHRInfo)))
   })
 
@@ -126,7 +125,12 @@ class SinkC(implicit p: Parameters) extends L2Module {
     }
   }
 
-  taskArb.io.out.ready := io.task.ready
+  // C-Release, with new data, comes before repl-Release writes old refill data back to DS
+  val newdataMask = VecInit(io.msInfo.map(s =>
+    s.valid && s.bits.set === taskArb.io.out.bits.set && s.bits.reqTag === taskArb.io.out.bits.tag && s.bits.blockRefill
+  )).asUInt
+  val releaseNeedBlock = taskArb.io.out.bits.opcode === ReleaseData && newdataMask.orR
+  taskArb.io.out.ready := io.task.ready && !releaseNeedBlock
   taskArb.io.in.zipWithIndex.foreach {
     case (in, i) =>
       in.valid := taskValids(i)
@@ -137,7 +141,7 @@ class SinkC(implicit p: Parameters) extends L2Module {
   }
 
   val cValid = io.c.valid && isRelease && last
-  io.task.valid := taskArb.io.out.valid
+  io.task.valid := taskArb.io.out.valid && !releaseNeedBlock
   io.task.bits := taskArb.io.out.bits
   io.task.bits.bufIdx := taskArb.io.out.bits.bufIdx
 
@@ -159,22 +163,6 @@ class SinkC(implicit p: Parameters) extends L2Module {
   io.releaseBufWrite.bits.id := 0.U(mshrBits.W) // id is given by MSHRCtl by comparing address to the MSHRs
   io.releaseBufWrite.bits.data.data := Cat(io.c.bits.data, probeAckDataBuf)
 
-  // C-Release, with new data, comes before repl-Release writes old refill data back to DS
-  val newdataMask = VecInit(io.msInfo.map(s =>
-    s.valid && s.bits.set === io.task.bits.set && s.bits.reqTag === io.task.bits.tag && s.bits.blockRefill
-  )).asUInt
-
-  // we must wait until 2nd beat written into databuf(idx) before we can read it
-  // So we use RegNext
-  // //Or we can use Cat(databuf(idx)(0), io.c.bits.data)
-
-  // since what we are trying to prevent is that C-Release comes first and MSHR-Release comes later
-  // we can make sure this refillBufWrite can be read by MSHR-Release
-  // TODO: this is rarely triggered, consider just blocking? but blocking may affect timing of SinkC-Directory
-  io.refillBufWrite.valid := RegNext(io.task.fire && io.task.bits.opcode === ReleaseData && newdataMask.orR, false.B)
-  io.refillBufWrite.bits.id := RegNext(OHToUInt(newdataMask))
-  io.refillBufWrite.bits.data.data := dataBuf(RegNext(io.task.bits.bufIdx)).asUInt
-
   io.c.ready := !isRelease || !first || !full
 
   io.bufResp.data := RegNext(RegEnable(dataBuf(io.task.bits.bufIdx), io.task.fire))
@@ -188,8 +176,7 @@ class SinkC(implicit p: Parameters) extends L2Module {
   XSPerfAccumulate(cacheParams, "sinkC_c_stall_for_noSpace", stall && hasData && first && full)
   XSPerfAccumulate(cacheParams, "sinkC_toReqArb_stall", io.task.valid && !io.task.ready)
   XSPerfAccumulate(cacheParams, "sinkC_buf_full", full)
-
-  XSPerfAccumulate(cacheParams, "NewDataNestC", io.refillBufWrite.valid)
+  XSPerfAccumulate(cacheParams, "releasedata_stall", taskArb.io.out.valid && io.task.ready && releaseNeedBlock)
   //!!WARNING: TODO: if this is zero, that means fucntion [Release-new-data written into refillBuf]
   // is never tested, and may have flaws
 }
