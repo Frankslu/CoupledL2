@@ -127,7 +127,8 @@ class PipeEntranceStatus(implicit p: Parameters) extends L2Bundle {
 class MSHRStatus(implicit p: Parameters) extends L2Bundle with HasChannelBits {
   val set         = UInt(setBits.W)
   val reqTag      = UInt(tagBits.W)
-  val metaTag     = UInt(tagBits.W)
+  val metaTag     = Vec(2, UInt(tagBits.W))
+  val validVec    = UInt(2.W)
   val needsRepl = Bool()
   val w_c_resp = Bool()
   val w_d_resp = Bool()
@@ -161,7 +162,9 @@ class MSHRRequest(implicit p: Parameters) extends L2Bundle {
 // MSHR info to ReqBuf and SinkB
 class MSHRInfo(implicit p: Parameters) extends L2Bundle {
   val set = UInt(setBits.W)
-  val way = UInt(wayBits.W)
+  val way = UInt((wayBits + 1).W)
+  // there are two ways in a cache block, set mask to indicate which is valid
+  val mask = UInt(2.W)
   val reqTag = UInt(tagBits.W)
   val willFree = Bool()
 
@@ -192,6 +195,7 @@ class RespInfoBundle(implicit p: Parameters) extends L2Bundle {
   val opcode = UInt(3.W)
   val param = UInt(3.W)
   val last = Bool() // last beat
+  val matchWay = UInt(1.W) // there are two tags in mshr, choose matched tag
   val dirty = Bool() // only used for sinkD resps
   val isHit = Bool() // only used for sinkD resps
 }
@@ -207,9 +211,9 @@ class RespBundle(implicit p: Parameters) extends L2Bundle {
 class FSMState(implicit p: Parameters) extends L2Bundle {
   // schedule
   val s_acquire = Bool()  // acquire downwards
-  val s_rprobe = Bool()   // probe upwards, caused by replace
+  val s_rprobe = Vec(2, Bool())   // probe upwards, caused by replace
   val s_pprobe = Bool()   // probe upwards, casued by probe
-  val s_release = Bool()  // release downwards
+  val s_release = Vec(2, Bool())  // release downwards
   val s_probeack = Bool() // respond probeack downwards
   val s_refill = Bool()   // respond grant upwards
   // val s_grantack = Bool() // respond grantack downwards, moved to GrantBuf
@@ -217,15 +221,15 @@ class FSMState(implicit p: Parameters) extends L2Bundle {
   val s_retry = Bool()    // need retry when conflict
 
   // wait
-  val w_rprobeackfirst = Bool()
-  val w_rprobeacklast = Bool()
+  val w_rprobeackfirst = Vec(2, Bool())
+  val w_rprobeacklast  = Vec(2, Bool())
   val w_pprobeackfirst = Bool()
   val w_pprobeacklast = Bool()
   val w_pprobeack = Bool()
   val w_grantfirst = Bool()
   val w_grantlast = Bool()
   val w_grant = Bool()
-  val w_releaseack = Bool()
+  val w_releaseack = Vec(2, Bool())
   val w_replResp = Bool()
 }
 

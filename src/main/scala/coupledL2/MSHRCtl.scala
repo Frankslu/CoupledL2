@@ -71,10 +71,12 @@ class MSHRCtl(implicit p: Parameters) extends L2Module {
     })
 
     val releaseBufWriteId = Output(UInt(mshrBits.W))
+    val releaseBufWriteMask = Output(UInt(2.W))
 
     /* nested writeback */
     val nestedwb = Input(new NestedWriteback)
     val nestedwbDataId = Output(ValidIO(UInt(mshrBits.W)))
+    val nestedwbDataMask = Output(UInt(2.W))
 
     /* status of s2 and s3 */
     val pipeStatusVec = Flipped(Vec(2, ValidIO(new PipeStatus)))
@@ -98,7 +100,7 @@ class MSHRCtl(implicit p: Parameters) extends L2Module {
   val pipeReqCount = PopCount(Cat(io.pipeStatusVec.map(_.valid))) // TODO: consider add !mshrTask to optimize
   val mshrCount = PopCount(Cat(mshrs.map(_.io.status.valid)))
   val mshrFull = pipeReqCount + mshrCount >= mshrsAll.U
-  val a_mshrFull = pipeReqCount + mshrCount >= (mshrsAll-1).U // the last idle mshr should not be allocated for channel A req
+  val a_mshrFull = pipeReqCount + mshrCount >= (mshrsAll-2).U // the last idle mshr should not be allocated for channel A req
   val mshrSelector = Module(new MSHRSelector())
   mshrSelector.io.idle := mshrs.map(m => !m.io.status.valid)
   val selectedMSHROH = mshrSelector.io.out.bits
@@ -106,8 +108,9 @@ class MSHRCtl(implicit p: Parameters) extends L2Module {
 
   val resp_sinkC_match_vec = mshrs.map { mshr =>
     val status = mshr.io.status.bits
-    val tag = Mux(status.needsRepl, status.metaTag, status.reqTag)
-    mshr.io.status.valid && status.w_c_resp && io.resps.sinkC.set === status.set && io.resps.sinkC.tag === tag
+    val tag = Mux(status.needsRepl, status.metaTag, VecInit(Seq.fill(2)(status.reqTag)))
+    VecInit(mshr.io.status.valid && status.w_c_resp && io.resps.sinkC.set === status.set && io.resps.sinkC.tag === tag(0) && status.validVec(0),
+      mshr.io.status.valid && status.w_c_resp && io.resps.sinkC.set === status.set && io.resps.sinkC.tag === tag(1) && status.validVec(1))
   }
 
   mshrs.zipWithIndex.foreach {
@@ -117,8 +120,9 @@ class MSHRCtl(implicit p: Parameters) extends L2Module {
       m.io.alloc.bits := io.fromMainPipe.mshr_alloc_s3.bits
       m.io.alloc.bits.task.isKeyword.foreach(_:= io.fromMainPipe.mshr_alloc_s3.bits.task.isKeyword.getOrElse(false.B))
 
-      m.io.resps.sink_c.valid := io.resps.sinkC.valid && resp_sinkC_match_vec(i)
+      m.io.resps.sink_c.valid := io.resps.sinkC.valid && resp_sinkC_match_vec(i).reduce(_ | _)
       m.io.resps.sink_c.bits := io.resps.sinkC.respInfo
+      m.io.resps.sink_c.bits.matchWay := Mux(resp_sinkC_match_vec(i)(0), 0.U, 1.U) // override
       m.io.resps.sink_d.valid := m.io.status.valid && io.resps.sinkD.valid && io.resps.sinkD.mshrId === i.U
       m.io.resps.sink_d.bits := io.resps.sinkD.respInfo
       m.io.resps.source_c.valid := m.io.status.valid && io.resps.sourceC.valid && io.resps.sourceC.mshrId === i.U
@@ -157,13 +161,17 @@ class MSHRCtl(implicit p: Parameters) extends L2Module {
   //     fastArb(mshrs.map(_.io.tasks.prefetchTrain.get), io.prefetchTrain.get, Some("prefetch_train"))
   // }
 
-  io.releaseBufWriteId := ParallelPriorityMux(resp_sinkC_match_vec, (0 until mshrsAll).map(i => i.U))
+  io.releaseBufWriteId := ParallelPriorityMux(resp_sinkC_match_vec.map(x => x(0) | x(1)), (0 until mshrsAll).map(i => i.U))
+  io.releaseBufWriteMask := ParallelPriorityMux(resp_sinkC_match_vec.map(x => x(0) | x(1)), resp_sinkC_match_vec.map(x => Cat(x(1), x(0))))
 
-  io.nestedwbDataId.valid := Cat(mshrs.map(_.io.nestedwbData)).orR
+  io.nestedwbDataId.valid := Cat(mshrs.map(_.io.nestedwbData.asUInt)).orR
   io.nestedwbDataId.bits := ParallelPriorityMux(mshrs.zipWithIndex.map {
-    case (mshr, i) => (mshr.io.nestedwbData, i.U)
+    case (mshr, i) => (mshr.io.nestedwbData.asUInt.orR, i.U)
   })
-  assert(RegNext(PopCount(mshrs.map(_.io.nestedwbData)) <= 1.U), "should only be one nestedwbData")
+  io.nestedwbDataMask := ParallelPriorityMux(mshrs.zipWithIndex.map {
+    case (mshr, i) => (mshr.io.nestedwbData.asUInt.orR, mshr.io.nestedwbData.asUInt)
+  })
+  assert(RegNext(PopCount(mshrs.map(_.io.nestedwbData.asUInt.orR)) <= 1.U), "should only be one nestedwbData")
 
   dontTouch(io.sourceA)
 

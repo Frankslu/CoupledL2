@@ -20,7 +20,7 @@ package coupledL2
 import chisel3._
 import chisel3.util._
 import coupledL2.MetaData._
-import utility.{MemReqSource, ParallelLookUp, ParallelPriorityMux}
+import utility.{MemReqSource, ParallelLookUp, ParallelPriorityEncoder, ParallelPriorityMux}
 import freechips.rocketchip.tilelink._
 import freechips.rocketchip.tilelink.TLMessages._
 import freechips.rocketchip.tilelink.TLPermissions._
@@ -53,7 +53,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
     val tasks = new MSHRTasks()
     val resps = new MSHRResps()
     val nestedwb = Input(new NestedWriteback)
-    val nestedwbData = Output(Bool())
+    val nestedwbData = Output(Vec(2, Bool()))
     val aMergeTask = Flipped(ValidIO(new TaskBundle))
     val replResp = Flipped(ValidIO(new ReplacerResult))
   })
@@ -63,6 +63,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
   val gotGrantData = RegInit(false.B)
   val probeDirty = RegInit(false.B)
   val probeGotN = RegInit(false.B)
+  val replMask  = RegInit(0.U(2.W))
 
   val timer = RegInit(0.U(64.W)) // for performance analysis
 
@@ -72,10 +73,13 @@ class MSHR(implicit p: Parameters) extends L2Module {
   val dirResult = RegInit(0.U.asTypeOf(new DirResult()))
   val meta      = dirResult.meta
   val initState = Wire(new FSMState())
-  initState.elements.foreach(_._2 := true.B)
+  initState.elements.foreach {
+    case (_, s: Bool) => s := true.B
+    case (_, s: Vec[Bool]) => s.foreach(_ := true.B)
+  }
   val state     = RegInit(new FSMState(), initState)
 
-  when(io.alloc.valid) {
+    when(io.alloc.valid) {
     req_valid := true.B
     state     := io.alloc.bits.state
     dirResult := io.alloc.bits.dirResult
@@ -86,11 +90,14 @@ class MSHR(implicit p: Parameters) extends L2Module {
     probeDirty  := false.B
     probeGotN   := false.B
     timer       := 1.U
+    replMask    := 0.U
   }
 
   /* ======== Enchantment ======== */
-  val meta_pft = meta.prefetch.getOrElse(false.B)
-  val meta_no_client = !meta.clients.orR
+  // there are two tag in a cacheline. This is used to indicate which side is the hit tag
+  val hitSide = dirResult.way(wayBits).asUInt
+  val meta_pft = VecInit(meta.map(_.prefetch.getOrElse(false.B)))
+  val meta_no_client = VecInit(meta.map(!_.clients.orR))
 
   val req_needT = needT(req.opcode, req.param)
   val req_acquire = req.opcode === AcquireBlock && req.fromA || req.opcode === AcquirePerm // AcquireBlock and Probe share the same opcode
@@ -98,23 +105,30 @@ class MSHR(implicit p: Parameters) extends L2Module {
   val req_get = req.opcode === Get
   val req_prefetch = req.opcode === Hint
 
-  val promoteT_normal =  dirResult.hit && meta_no_client && meta.state === TIP
-  val promoteT_L3     = !dirResult.hit && gotT
-  val promoteT_alias  =  dirResult.hit && req.aliasTask.getOrElse(false.B) && (meta.state === TRUNK || meta.state === TIP)
-  // under above circumstances, we grant T to L1 even if it wants B
-  val req_promoteT = (req_acquire || req_get || req_prefetch) && (promoteT_normal || promoteT_L3 || promoteT_alias)
+  val promoteT_normal, promoteT_L3, promoteT_alias, req_promoteT = Vec(2, Bool())
+  for (i <- 0 until 2) {
+    promoteT_normal(i) :=  dirResult.hit && meta_no_client(i) && meta(i).state === TIP
+    promoteT_L3(i)     := !dirResult.hit && gotT
+    promoteT_alias(i)  :=  dirResult.hit && req.aliasTask.getOrElse(false.B) && (meta(i).state === TRUNK || meta(i).state === TIP)
+    // under above circumstances, we grant T to L1 even if it wants B
+    req_promoteT(i) := (req_acquire || req_get || req_prefetch) && (promoteT_normal(i) || promoteT_L3(i) || promoteT_alias(i))
+  }
 
   assert(!(req_valid && req_prefetch && dirResult.hit), "MSHR can not receive prefetch hit req")
 
   /* ======== Task allocation ======== */
   // Theoretically, data to be released is saved in ReleaseBuffer, so Acquire can be sent as soon as req enters mshr
   io.tasks.source_a.valid := !state.s_acquire
-  io.tasks.source_b.valid := !state.s_pprobe || !state.s_rprobe
-  val mp_release_valid = !state.s_release && state.w_rprobeacklast && state.w_grantlast &&
+  io.tasks.source_b.valid := !state.s_pprobe || !state.s_rprobe(0) || !state.s_rprobe(1)
+  // TODO: release1 need to be after release0
+  val mp_release0_valid = !state.s_release(0) && state.w_rprobeacklast(0) && state.w_grantlast &&
     state.w_replResp // release after Grant to L1 sent and replRead returns
+  val mp_release1_valid = !state.s_release(1) && !mp_release0_valid && state.w_rprobeacklast(1) &&
+    state.w_grantlast && state.w_replResp // release after Grant to L1 sent and replRead returns
+  val mp_release_valid = mp_release0_valid | mp_release1_valid
 
   val mp_probeack_valid = !state.s_probeack && state.w_pprobeacklast
-  val mp_grant_valid = !state.s_refill && state.w_grantlast && state.w_rprobeacklast // [Alias] grant after rprobe done
+  val mp_grant_valid = !state.s_refill && state.w_grantlast && state.w_rprobeacklast(hitSide) // [Alias] grant after rprobe done
   io.tasks.mainpipe.valid := mp_release_valid || mp_probeack_valid || mp_grant_valid
   // io.tasks.prefetchTrain.foreach(t => t.valid := !state.s_triggerprefetch.getOrElse(true.B))
 
@@ -150,16 +164,17 @@ class MSHR(implicit p: Parameters) extends L2Module {
       !state.s_pprobe,
       req.param,
       Mux(
-        req_get && dirResult.hit && meta.state === TRUNK,
+        req_get && dirResult.hit && meta(hitSide).state === TRUNK, // TODO:
         toB,
         toN
       )
     )
-    ob.alias.foreach(_ := meta.alias.getOrElse(0.U))
+    ob.alias.foreach(_ := meta(hitSide).alias.getOrElse(0.U))
     ob
   }
   val mp_release, mp_probeack, mp_grant = Wire(new TaskBundle)
   val mp_release_task = {
+    val releaseSide = Mux(state.s_release(0), 0.U, 1.U)
     mp_release.channel := req.channel
     mp_release.tag := dirResult.tag
     mp_release.set := req.set
@@ -167,18 +182,19 @@ class MSHR(implicit p: Parameters) extends L2Module {
     mp_release.alias.foreach(_ := 0.U)
     mp_release.vaddr.foreach(_ := 0.U)
     mp_release.isKeyword.foreach(_ := false.B)
+    // TODO: check
     // if dirty, we must ReleaseData
     // if accessed, we ReleaseData to keep the data in L3, for future access to be faster
     // [Access] TODO: consider use a counter
     mp_release.opcode := {
       cacheParams.releaseData match {
-        case 0 => Mux(meta.dirty && meta.state =/= INVALID || probeDirty, ReleaseData, Release)
-        case 1 => Mux(meta.dirty && meta.state =/= INVALID || probeDirty || meta.accessed, ReleaseData, Release)
-        case 2 => Mux(meta.prefetch.getOrElse(false.B) && !meta.accessed, Release, ReleaseData) //TODO: has problem with this
+        case 0 => Mux(meta(releaseSide).dirty && meta(releaseSide).state =/= INVALID || probeDirty, ReleaseData, Release)
+        case 1 => Mux(meta(releaseSide).dirty && meta(releaseSide).state =/= INVALID || probeDirty || meta(releaseSide).accessed, ReleaseData, Release)
+        case 2 => Mux(meta(releaseSide).prefetch.getOrElse(false.B) && !meta(releaseSide).accessed, Release, ReleaseData) //TODO: has problem with this
         case 3 => ReleaseData // best performance with HuanCun-L3
       }
     }
-    mp_release.param := Mux(isT(meta.state), TtoN, BtoN)
+    mp_release.param := Mux(isT(meta(releaseSide).state), TtoN, BtoN)
     mp_release.size := 0.U(msgSizeBits.W)
     mp_release.sourceId := 0.U(sourceIdBits.W)
     mp_release.bufIdx := 0.U(bufIdxBits.W)
@@ -193,7 +209,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
     mp_release.way := dirResult.way
     mp_release.fromL2pft.foreach(_ := false.B)
     mp_release.needHint.foreach(_ := false.B)
-    mp_release.dirty := meta.dirty && meta.state =/= INVALID || probeDirty
+    mp_release.dirty := meta(releaseSide).dirty && meta(releaseSide).state =/= INVALID || probeDirty
     mp_release.metaWen := false.B
     mp_release.meta := MetaEntry()
     mp_release.tagWen := false.B
@@ -215,12 +231,12 @@ class MSHR(implicit p: Parameters) extends L2Module {
     mp_probeack.vaddr.foreach(_ := 0.U)
     mp_probeack.isKeyword.foreach(_ := false.B)
     mp_probeack.opcode := Mux(
-      meta.dirty && isT(meta.state) || probeDirty || req.needProbeAckData,
+      meta(hitSide).dirty && isT(meta(hitSide).state) || probeDirty || req.needProbeAckData,
       ProbeAckData,
       ProbeAck
     )
     mp_probeack.param := ParallelLookUp(
-      Cat(isT(meta.state), req.param(bdWidth - 1, 0)),
+      Cat(isT(meta(hitSide).state), req.param(bdWidth - 1, 0)),
       Seq(
         Cat(false.B, toN) -> BtoN,
         Cat(true.B, toN) -> TtoN,
@@ -239,7 +255,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
     mp_probeack.way := dirResult.way
     mp_probeack.fromL2pft.foreach(_ := false.B)
     mp_probeack.needHint.foreach(_ := false.B)
-    mp_probeack.dirty := meta.dirty && meta.state =/= INVALID || probeDirty
+    mp_probeack.dirty := meta(hitSide).dirty && meta(hitSide).state =/= INVALID || probeDirty
     mp_probeack.meta := MetaEntry(
       dirty = false.B,
       state = Mux(
@@ -248,13 +264,13 @@ class MSHR(implicit p: Parameters) extends L2Module {
         Mux(
           req.param === toB,
           BRANCH,
-          meta.state
+          meta(hitSide).state
         )
       ),
       clients = Fill(clientBits, !probeGotN),
-      alias = meta.alias, //[Alias] Keep alias bits unchanged
-      prefetch = req.param =/= toN && meta_pft,
-      accessed = req.param =/= toN && meta.accessed
+      alias = meta(hitSide).alias, //[Alias] Keep alias bits unchanged
+      prefetch = req.param =/= toN && meta_pft(hitSide),
+      accessed = req.param =/= toN && meta(hitSide).accessed
     )
     mp_probeack.metaWen := true.B
     mp_probeack.tagWen := false.B
@@ -291,7 +307,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
         req.param,
         req.param)(
         Seq(
-          NtoB -> Mux(req_promoteT, toT, toB),
+          NtoB -> Mux(req_promoteT(hitSide), toT, toB),
           BtoT -> toT,
           NtoT -> toT
         )
@@ -305,7 +321,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
     mp_grant.way := dirResult.way
     // if it is a Get or Prefetch, then we must keep alias bits unchanged
     // in case future probes gets the wrong alias bits
-    val aliasFinal = Mux(req_get || req_prefetch, meta.alias.getOrElse(0.U), req.alias.getOrElse(0.U))
+    val aliasFinal = Mux(req_get || req_prefetch, meta(hitSide).alias.getOrElse(0.U), req.alias.getOrElse(0.U))
     mp_grant.alias.foreach(_ := aliasFinal)
     mp_grant.aliasTask.foreach(_ := req.aliasTask.getOrElse(false.B))
     // [Alias] write probeData into DS for alias-caused Probe, but not replacement-caused Probe
@@ -314,32 +330,32 @@ class MSHR(implicit p: Parameters) extends L2Module {
     // useProbeData will be set false to use data in RefillBuffer
     mp_grant.useProbeData := (dirResult.hit && req_get) || 
       (req.aliasTask.getOrElse(false.B) && 
-        !(dirResult.meta.state === BRANCH && req_needT) 
+        !(dirResult.meta(hitSide).state === BRANCH && req_needT)
       )
     mp_grant.dirty := false.B
 
     mp_grant.meta := MetaEntry(
-      dirty = gotDirty || dirResult.hit && (meta.dirty || probeDirty),
+      dirty = gotDirty || dirResult.hit && (meta(hitSide).dirty || probeDirty),
       state = Mux(
         req_get,
         Mux( // Get
           dirResult.hit,
-          Mux(isT(meta.state), TIP, BRANCH),
-          Mux(req_promoteT, TIP, BRANCH)
+          Mux(isT(meta(hitSide).state), TIP, BRANCH),
+          Mux(req_promoteT(hitSide), TIP, BRANCH)
         ),
         Mux( // Acquire
-          req_promoteT || req_needT,
+          req_promoteT(hitSide) || req_needT,
           Mux(req_prefetch, TIP, TRUNK),
           BRANCH
         )
       ),
       clients = Mux(
         req_prefetch,
-        Mux(dirResult.hit, meta.clients, Fill(clientBits, false.B)),
-        Fill(clientBits, !(req_get && (!dirResult.hit || meta_no_client || probeGotN)))
+        Mux(dirResult.hit, meta(hitSide).clients, Fill(clientBits, false.B)),
+        Fill(clientBits, !(req_get && (!dirResult.hit || meta_no_client(hitSide) || probeGotN)))
       ),
       alias = Some(aliasFinal),
-      prefetch = req_prefetch || dirResult.hit && meta_pft,
+      prefetch = req_prefetch || dirResult.hit && meta_pft(hitSide),
       pfsrc = PfSource.fromMemReqSource(req.reqSource),
       accessed = req_acquire || req_get
     )
@@ -368,16 +384,16 @@ class MSHR(implicit p: Parameters) extends L2Module {
       merge_task.param,
       merge_task.param)(
       Seq(
-        NtoB -> Mux(req_promoteT, toT, toB),
+        NtoB -> Mux(req_promoteT(hitSide), toT, toB),
         BtoT -> toT,
         NtoT -> toT
       )
     )
     mp_grant.aMergeTask.sourceId := merge_task.sourceId
     mp_grant.aMergeTask.meta := MetaEntry(
-      dirty = gotDirty || dirResult.hit && (meta.dirty || probeDirty),
+      dirty = gotDirty || dirResult.hit && (meta(hitSide).dirty || probeDirty),
       state = Mux( // Acquire
-        req_promoteT || needT(merge_task.opcode, merge_task.param),
+        req_promoteT(hitSide) || needT(merge_task.opcode, merge_task.param),
         TRUNK,
         BRANCH
       ),
@@ -412,15 +428,24 @@ class MSHR(implicit p: Parameters) extends L2Module {
   }
   when (io.tasks.source_b.fire) {
     state.s_pprobe := true.B
-    state.s_rprobe := true.B
+    // TODO: Check correctness
+    when (state.s_rprobe(0) === false.B) {
+      state.s_rprobe(0) := true.B
+    }.otherwise {
+      state.s_rprobe(1) := true.B
+    }
   }
   when (io.tasks.mainpipe.ready) {
     when (mp_grant_valid) {
       state.s_refill := true.B
       state.s_retry := true.B
-    }.elsewhen (mp_release_valid) {
-      state.s_release := true.B
-      meta.state := INVALID
+    }.elsewhen (mp_release0_valid) {
+      // TODO: Check correctness
+      state.s_release(0) := true.B
+      meta(0).state := INVALID
+    }.elsewhen(mp_release1_valid) {
+      state.s_release(1) := true.B
+      meta(1).state := INVALID
     }.elsewhen (mp_probeack_valid) {
       state.s_probeack := true.B
     }
@@ -435,10 +460,11 @@ class MSHR(implicit p: Parameters) extends L2Module {
   /* ======== Handling response ======== */
   val c_resp = io.resps.sink_c
   val d_resp = io.resps.sink_d
+  val c_resp_matchWay = c_resp.bits.matchWay
   when (c_resp.valid) {
     when (c_resp.bits.opcode === ProbeAck || c_resp.bits.opcode === ProbeAckData) {
-      state.w_rprobeackfirst := true.B
-      state.w_rprobeacklast := state.w_rprobeacklast || c_resp.bits.last
+      state.w_rprobeackfirst(c_resp_matchWay) := true.B
+      state.w_rprobeacklast(c_resp_matchWay) := state.w_rprobeacklast(c_resp_matchWay) || c_resp.bits.last
       state.w_pprobeackfirst := true.B
       state.w_pprobeacklast := state.w_pprobeacklast || c_resp.bits.last
       state.w_pprobeack := state.w_pprobeack || req.off === 0.U || c_resp.bits.last
@@ -488,25 +514,39 @@ class MSHR(implicit p: Parameters) extends L2Module {
     // 2. the same way, just release as normal (only now we set s_release)
     // 3. differet way, we need to update meta and release that way
     // if meta has client, rprobe client
-    when (replResp.meta.state =/= INVALID) {
+    when (replResp.meta(0).state =/= INVALID) {
       // set release flags
-      state.s_release := false.B
-      state.w_releaseack := false.B
+      state.s_release(0) := false.B
+      state.w_releaseack(0) := false.B
       // rprobe clients if any
-      when(replResp.meta.clients.orR) {
-        state.s_rprobe := false.B
-        state.w_rprobeackfirst := false.B
-        state.w_rprobeacklast := false.B
+      when(replResp.meta(0).clients.orR) {
+        state.s_rprobe(0) := false.B
+        state.w_rprobeackfirst(0) := false.B
+        state.w_rprobeacklast(0) := false.B
       }
     }
+    when (replResp.meta(1).state =/= INVALID && replResp.meta(1).compressed === true.B) {
+      // set release flags
+      state.s_release(1) := false.B
+      state.w_releaseack(1) := false.B
+      // rprobe clients if any
+      when(replResp.meta(1).clients.orR) {
+        state.s_rprobe(0) := false.B
+        state.w_rprobeackfirst(0) := false.B
+        state.w_rprobeacklast(0) := false.B
+      }
+    }
+    replMask(0) := replResp.meta(0).state =/= INVALID
+    replMask(1) := replResp.meta(1).state =/= INVALID
   }
 
   when (req_valid) {
     timer := timer + 1.U
   }
 
-  val no_schedule = state.s_refill && state.s_probeack && state.s_release // && state.s_triggerprefetch.getOrElse(true.B)
-  val no_wait = state.w_rprobeacklast && state.w_pprobeacklast && state.w_grantlast && state.w_releaseack && state.w_replResp
+  val no_schedule = state.s_refill && state.s_probeack && state.s_release.reduce(_ | _) // && state.s_triggerprefetch.getOrElse(true.B)
+  val no_wait = state.w_rprobeacklast.reduce(_ | _) && state.w_pprobeacklast &&
+    state.w_grantlast && state.w_releaseack.reduce(_ | _) && state.w_replResp
   val will_free = no_schedule && no_wait
   when (will_free && req_valid) {
     req_valid := false.B
@@ -517,7 +557,12 @@ class MSHR(implicit p: Parameters) extends L2Module {
   val nestB = !state.w_grantfirst
 
   // alias: should protect meta from being accessed or occupied
-  val releaseNotSent = !state.s_release
+  // TODO: Some signal may need to set to Vec
+  val releaseNotSent = state.s_release.reduce(!_ | !_)
+  val validMask = Mux(dirResult.hit,
+    Mux(meta(hitSide).compressed, 1.U << hitSide, "b11".U),
+    replMask
+  )
   io.status.valid := req_valid
   io.status.bits.channel := req.channel
   io.status.bits.set := req.set
@@ -525,18 +570,20 @@ class MSHR(implicit p: Parameters) extends L2Module {
   io.status.bits.metaTag := dirResult.tag
   io.status.bits.needsRepl := releaseNotSent
   // wait for resps, high as valid
-  io.status.bits.w_c_resp := !state.w_rprobeacklast || !state.w_pprobeacklast || !state.w_pprobeack
-  io.status.bits.w_d_resp := !state.w_grantlast || !state.w_grant || !state.w_releaseack
+  io.status.bits.w_c_resp := state.w_rprobeacklast.reduce(!_ | !_) || !state.w_pprobeacklast || !state.w_pprobeack
+  io.status.bits.w_d_resp := !state.w_grantlast || !state.w_grant || !state.w_releaseack.reduce(!_ | !_)
   io.status.bits.will_free := will_free
   io.status.bits.is_miss := !dirResult.hit
   io.status.bits.is_prefetch := req_prefetch
   io.status.bits.reqSource := req.reqSource
+  // there are two ways in mshr, indicate whether a way is used
+  io.status.bits.validVec := validMask
 
   io.msInfo.valid := req_valid
   io.msInfo.bits.set := req.set
   io.msInfo.bits.way := dirResult.way
   io.msInfo.bits.reqTag := req.tag
-  io.msInfo.bits.needRelease := !state.w_releaseack
+  io.msInfo.bits.needRelease := !state.w_releaseack.reduce(!_ | !_)
   // if releaseTask is already in mainpipe_s1/s2, while a refillTask in mainpipe_s3, the refill should also be blocked and retry
   io.msInfo.bits.blockRefill := releaseNotSent || RegNext(releaseNotSent,false.B) || RegNext(RegNext(releaseNotSent,false.B),false.B)
   io.msInfo.bits.dirHit := dirResult.hit
@@ -556,19 +603,22 @@ class MSHR(implicit p: Parameters) extends L2Module {
   /* ======== Handling Nested C ======== */
   // for A miss, only when replResp do we finally choose a way, allowing nested C
   // for A-alias, always allowing nested C (state.w_replResp === true.B)
-  val nestedwb_match = req_valid && meta.state =/= INVALID &&
-    dirResult.set === io.nestedwb.set &&
-    dirResult.tag === io.nestedwb.tag &&
-    state.w_replResp
+  for (i <- 0 until 2) {
+    val nestedwb_match = req_valid && meta(i).state =/= INVALID &&
+      validMask(i) &&
+      dirResult.set === io.nestedwb.set &&
+      dirResult.tag(i) === io.nestedwb.tag &&
+      state.w_replResp
 
-  when (nestedwb_match) {
-    when (io.nestedwb.c_set_dirty) {
-      meta.dirty := true.B
+    when (nestedwb_match) {
+      when (io.nestedwb.c_set_dirty) {
+        meta(i).dirty := true.B
+      }
     }
+    // let nested C write ReleaseData to the MSHRBuffer entry of this MSHR id
+    // This is the VALID signal for releaseBuf.io.w(2)
+    io.nestedwbData(i) := nestedwb_match && io.nestedwb.c_set_dirty
   }
-  // let nested C write ReleaseData to the MSHRBuffer entry of this MSHR id
-  // This is the VALID signal for releaseBuf.io.w(2)
-  io.nestedwbData := nestedwb_match && io.nestedwb.c_set_dirty
 
   dontTouch(state)
 
