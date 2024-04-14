@@ -83,13 +83,15 @@ class TaskBundle(implicit p: Parameters) extends L2Bundle with HasChannelBits {
   val dirty = Bool()
 
   // if this is an mshr task and it needs to write dir
-  val way = UInt(wayBits.W)
+  val way = UInt((wayBits + 1).W)
   val meta = new MetaEntry()
+  val metaVec = Vec(2, new MetaEntry())
   val metaWen = Bool()
   val tagWen = Bool()
   val dsWen = Bool()
 
   // for Dir to choose a way inside wayMask
+  /** This variable is not used */
   val wayMask = UInt(cacheParams.ways.W)
 
   // for Grant to read replacer to choose a replaced way
@@ -104,6 +106,8 @@ class TaskBundle(implicit p: Parameters) extends L2Bundle with HasChannelBits {
   // for merged MSHR tasks(Acquire & late Prefetch)
   val mergeA = Bool()
   val aMergeTask = new MergeTaskBundle()
+
+  val releaseBuf_rMask = UInt(2.W)
 }
 
 class PipeStatus(implicit p: Parameters) extends L2Bundle with HasChannelBits
@@ -128,9 +132,8 @@ class MSHRStatus(implicit p: Parameters) extends L2Bundle with HasChannelBits {
   val set         = UInt(setBits.W)
   val reqTag      = UInt(tagBits.W)
   val metaTag     = Vec(2, UInt(tagBits.W))
-  val validVec    = UInt(2.W)
   val needsRepl = Bool()
-  val w_c_resp = Bool()
+  val w_c_resp = Vec(2, Bool())
   val w_d_resp = Bool()
   val will_free = Bool()
 
@@ -163,8 +166,8 @@ class MSHRRequest(implicit p: Parameters) extends L2Bundle {
 class MSHRInfo(implicit p: Parameters) extends L2Bundle {
   val set = UInt(setBits.W)
   val way = UInt((wayBits + 1).W)
-  // there are two ways in a cache block, set mask to indicate which is valid
-  val mask = UInt(2.W)
+  val sideCannotNestC = UInt(2.W)
+  val sideValidMask = UInt(2.W)
   val reqTag = UInt(tagBits.W)
   val willFree = Bool()
 
@@ -174,7 +177,7 @@ class MSHRInfo(implicit p: Parameters) extends L2Bundle {
   // PS: ReleaseTask is also responsible for writing refillData to DS when A miss
   val blockRefill = Bool()
 
-  val metaTag = UInt(tagBits.W)
+  val metaTag = Vec(2, UInt(tagBits.W))
   val dirHit = Bool()
 
   // decide whether can nest B (req same-addr)
@@ -188,14 +191,13 @@ class MSHRInfo(implicit p: Parameters) extends L2Bundle {
   val s_refill = Bool()
   val param = UInt(3.W)
   val mergeA = Bool() // whether the mshr already merge an acquire(avoid alias merge)
-  val w_releaseack = Bool()
+  val w_releaseack = Vec(2, Bool())
 }
 
 class RespInfoBundle(implicit p: Parameters) extends L2Bundle {
   val opcode = UInt(3.W)
   val param = UInt(3.W)
   val last = Bool() // last beat
-  val matchWay = UInt(1.W) // there are two tags in mshr, choose matched tag
   val dirty = Bool() // only used for sinkD resps
   val isHit = Bool() // only used for sinkD resps
 }
@@ -231,6 +233,7 @@ class FSMState(implicit p: Parameters) extends L2Bundle {
   val w_grant = Bool()
   val w_releaseack = Vec(2, Bool())
   val w_replResp = Bool()
+  val w_evictResp = Bool()
 }
 
 class SourceAReq(implicit p: Parameters) extends L2Bundle {

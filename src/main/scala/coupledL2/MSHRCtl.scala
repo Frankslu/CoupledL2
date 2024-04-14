@@ -48,9 +48,12 @@ class MSHRCtl(implicit p: Parameters) extends L2Module {
     /* interact with mainpipe */
     val fromMainPipe = new Bundle() {
       val mshr_alloc_s3 = Flipped(ValidIO(new MSHRRequest))
+      val mainPipeInfo_s3 = Flipped(ValidIO(new MainPipeInfo))
+      val nestedwb = Input(new NestedWriteback)
     }
     val toMainPipe = new Bundle() {
       val mshr_alloc_ptr = Output(UInt(mshrBits.W))
+      val nestC = Output(Bool())
     }
 
     /* to request arbiter */
@@ -74,7 +77,6 @@ class MSHRCtl(implicit p: Parameters) extends L2Module {
     val releaseBufWriteMask = Output(UInt(2.W))
 
     /* nested writeback */
-    val nestedwb = Input(new NestedWriteback)
     val nestedwbDataId = Output(ValidIO(UInt(mshrBits.W)))
     val nestedwbDataMask = Output(UInt(2.W))
 
@@ -100,17 +102,19 @@ class MSHRCtl(implicit p: Parameters) extends L2Module {
   val pipeReqCount = PopCount(Cat(io.pipeStatusVec.map(_.valid))) // TODO: consider add !mshrTask to optimize
   val mshrCount = PopCount(Cat(mshrs.map(_.io.status.valid)))
   val mshrFull = pipeReqCount + mshrCount >= mshrsAll.U
-  val a_mshrFull = pipeReqCount + mshrCount >= (mshrsAll-2).U // the last idle mshr should not be allocated for channel A req
+  val a_mshrFull = pipeReqCount + mshrCount >= (mshrsAll-2).U // the last two idle mshr should not be allocated for channel A req
+  val b_mshrFull = pipeReqCount + mshrCount >= (mshrsAll-1).U // the last two idle mshr should not be allocated for channel A req
   val mshrSelector = Module(new MSHRSelector())
   mshrSelector.io.idle := mshrs.map(m => !m.io.status.valid)
   val selectedMSHROH = mshrSelector.io.out.bits
   io.toMainPipe.mshr_alloc_ptr := OHToUInt(selectedMSHROH)
 
+  // TODO:
   val resp_sinkC_match_vec = mshrs.map { mshr =>
     val status = mshr.io.status.bits
     val tag = Mux(status.needsRepl, status.metaTag, VecInit(Seq.fill(2)(status.reqTag)))
-    VecInit(mshr.io.status.valid && status.w_c_resp && io.resps.sinkC.set === status.set && io.resps.sinkC.tag === tag(0) && status.validVec(0),
-      mshr.io.status.valid && status.w_c_resp && io.resps.sinkC.set === status.set && io.resps.sinkC.tag === tag(1) && status.validVec(1))
+    VecInit(mshr.io.status.valid && status.w_c_resp(0) && io.resps.sinkC.set === status.set && io.resps.sinkC.tag === tag(0),
+      mshr.io.status.valid && status.w_c_resp(1) && io.resps.sinkC.set === status.set && io.resps.sinkC.tag === tag(1))
   }
 
   mshrs.zipWithIndex.foreach {
@@ -122,22 +126,24 @@ class MSHRCtl(implicit p: Parameters) extends L2Module {
 
       m.io.resps.sink_c.valid := io.resps.sinkC.valid && resp_sinkC_match_vec(i).reduce(_ | _)
       m.io.resps.sink_c.bits := io.resps.sinkC.respInfo
-      m.io.resps.sink_c.bits.matchWay := Mux(resp_sinkC_match_vec(i)(0), 0.U, 1.U) // override
+      m.io.resps.sink_c_matchWay := resp_sinkC_match_vec(i) // override
       m.io.resps.sink_d.valid := m.io.status.valid && io.resps.sinkD.valid && io.resps.sinkD.mshrId === i.U
       m.io.resps.sink_d.bits := io.resps.sinkD.respInfo
       m.io.resps.source_c.valid := m.io.status.valid && io.resps.sourceC.valid && io.resps.sourceC.mshrId === i.U
       m.io.resps.source_c.bits := io.resps.sourceC.respInfo
       m.io.replResp.valid := io.replResp.valid && io.replResp.bits.mshrId === i.U
       m.io.replResp.bits := io.replResp.bits
+      m.io.mainPipeInfo.valid := io.fromMainPipe.mainPipeInfo_s3.valid && io.fromMainPipe.mainPipeInfo_s3.bits.mshrId === i.U
+      m.io.mainPipeInfo.bits := io.fromMainPipe.mainPipeInfo_s3.bits
 
       io.msInfo(i) := m.io.msInfo
-      m.io.nestedwb := io.nestedwb
+      m.io.nestedwb := io.fromMainPipe.nestedwb
       m.io.aMergeTask.valid := io.aMergeTask.valid && io.aMergeTask.bits.id === i.U
       m.io.aMergeTask.bits := io.aMergeTask.bits.task
   }
 
-  io.toReqArb.blockC_s1 := false.B
-  io.toReqArb.blockB_s1 := mshrFull   // conflict logic in SinkB
+  io.toReqArb.blockC_s1 := mshrFull
+  io.toReqArb.blockB_s1 := b_mshrFull   // conflict logic in SinkB
   io.toReqArb.blockA_s1 := a_mshrFull // conflict logic in ReqBuf
   io.toReqArb.blockG_s1 := false.B
 
@@ -171,6 +177,7 @@ class MSHRCtl(implicit p: Parameters) extends L2Module {
   io.nestedwbDataMask := ParallelPriorityMux(mshrs.zipWithIndex.map {
     case (mshr, i) => (mshr.io.nestedwbData.asUInt.orR, mshr.io.nestedwbData.asUInt)
   })
+  io.toMainPipe.nestC := io.nestedwbDataId.valid
   assert(RegNext(PopCount(mshrs.map(_.io.nestedwbData.asUInt.orR)) <= 1.U), "should only be one nestedwbData")
 
   dontTouch(io.sourceA)

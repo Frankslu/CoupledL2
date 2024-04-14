@@ -57,7 +57,7 @@ class SinkA(implicit p: Parameters) extends L2Module {
     task.fromL2pft.foreach(_ := false.B)
     task.needHint.foreach(_ := a.user.lift(PrefetchKey).getOrElse(false.B))
     task.dirty := false.B
-    task.way := 0.U(wayBits.W)
+    task.way := 0.U((wayBits + 1).W)
     task.meta := 0.U.asTypeOf(new MetaEntry)
     task.metaWen := false.B
     task.tagWen := false.B
@@ -70,6 +70,8 @@ class SinkA(implicit p: Parameters) extends L2Module {
     task.isKeyword.foreach(_ := a.echo.lift(IsKeywordKey).getOrElse(false.B)) 
     task.mergeA := false.B
     task.aMergeTask := 0.U.asTypeOf(new MergeTaskBundle)
+    task.metaVec := DontCare
+    task.releaseBuf_rMask := DontCare
     task
   }
   def fromPrefetchReqtoTaskBundle(req: PrefetchReq): TaskBundle = {
@@ -94,7 +96,7 @@ class SinkA(implicit p: Parameters) extends L2Module {
     task.fromL2pft.foreach(_ := req.isBOP)
     task.needHint.foreach(_ := false.B)
     task.dirty := false.B
-    task.way := 0.U(wayBits.W)
+    task.way := 0.U((wayBits + 1).W)
     task.meta := 0.U.asTypeOf(new MetaEntry)
     task.metaWen := false.B
     task.tagWen := false.B
@@ -106,6 +108,8 @@ class SinkA(implicit p: Parameters) extends L2Module {
     task.isKeyword.foreach(_ := false.B)
     task.mergeA := false.B
     task.aMergeTask := 0.U.asTypeOf(new MergeTaskBundle)
+    task.metaVec := DontCare
+    task.releaseBuf_rMask := DontCare
     task
   }
   if (prefetchOpt.nonEmpty) {

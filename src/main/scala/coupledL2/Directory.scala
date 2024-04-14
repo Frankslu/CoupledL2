@@ -25,6 +25,8 @@ import utility.{ParallelPriorityMux, RegNextN}
 import org.chipsalliance.cde.config.Parameters
 import coupledL2.prefetch.PfSource
 import freechips.rocketchip.tilelink.TLMessages._
+import coupledL2.MetaData._
+import freechips.rocketchip.util.DontTouch
 
 class MetaEntry(implicit p: Parameters) extends L2Bundle {
   val dirty = Bool()
@@ -42,7 +44,8 @@ class MetaEntry(implicit p: Parameters) extends L2Bundle {
   }
 }
 
-object MetaEntry {
+object
+MetaEntry {
   def apply()(implicit p: Parameters) = {
     val init = WireInit(0.U.asTypeOf(new MetaEntry))
     init
@@ -95,6 +98,7 @@ class ReplacerResult(implicit p: Parameters) extends L2Bundle {
   val meta = Vec(2, new MetaEntry())
   val mshrId = UInt(mshrBits.W)
   val retry = Bool()
+  val releaseTask = UInt(2.W)
 }
 
 class MetaWrite(implicit p: Parameters) extends L2Bundle {
@@ -113,13 +117,13 @@ class Directory(implicit p: Parameters) extends L2Module {
 
   val io = IO(new Bundle() {
     val read = Flipped(DecoupledIO(new DirRead))
+    val fromMainPipe_s3 = new Bundle() {
+      val wdataCompressible = Input(Bool())
+    }
     val resp = ValidIO(new DirResult())
     val metaWReq = Flipped(Vec(2, ValidIO(new MetaWrite)))
     val tagWReq = Flipped(Vec(2, ValidIO(new TagWrite)))
-    val replResp = ValidIO(new Bundle(){
-      val compressible = new ReplacerResult()
-      val uncompressible = new ReplacerResult()
-    })
+    val replResp = ValidIO(new ReplacerResult())
     // used to count occWays for Grant to retry
     val msInfo = Vec(mshrsAll, Flipped(ValidIO(new MSHRInfo)))
   })
@@ -129,21 +133,21 @@ class Directory(implicit p: Parameters) extends L2Module {
     val invalid_vec = metaVec.map(_.state === MetaData.INVALID).grouped(metaVec.size / 2).toSeq
     val uc_invalid_vec = invalid_vec(0).zip(invalid_vec(1)).map(x => x._1 & x._2)
     val uc_has_invalid_way = Cat(uc_invalid_vec).orR
-    val ucWay = Cat(ParallelPriorityMux(uc_invalid_vec.zipWithIndex.map(x => x._1 -> x._2.U(wayBits.W))), "b0".U)
+    val ucWay = ParallelPriorityMux(uc_invalid_vec.zipWithIndex.map(x => x._1 -> x._2.U(wayBits.W)))
+    // val ucWay = ParallelPriorityMux(uc_invalid_vec.zipWithIndex.map(x => x._1 -> x._2.U(wayBits.W)))
     // if two sub line is both invalid, we tend to refill uncompressible data in it
     // Seq(x & ~y, y & ~x) means:
     // 0, 0 -> (0, 0)
     // 1, 0 -> (1, 0)
     // 0, 1 -> (0, 1)
     // 1, 1 -> (0, 0), which is the case that two sub line is both invalid
-    val cc_invalid_vec: Seq[Bool] = invalid_vec(0).zip(invalid_vec(1)).flatMap {
+    val cc_invalid_vec_tmp: Seq[Seq[Bool]] = invalid_vec(0).zip(invalid_vec(1)).map {
       case (x, y) => Seq(x & ~y, y & ~x)
     }
+    val cc_invalid_vec = cc_invalid_vec_tmp.map(_(0)) ++ cc_invalid_vec_tmp.map(_(1))
     val cc_has_invalid_way = Cat(cc_invalid_vec).orR
-    val ccWay_tmp = ParallelPriorityMux(cc_invalid_vec.zipWithIndex.map(x => x._1 -> x._2.U((wayBits + 1).W)))
-    val ccWay = Mux(
-      cc_has_invalid_way,
-      Cat(ccWay_tmp << 1, ccWay_tmp(wayBits))(wayBits, 0),
+    val ccWay = Mux(cc_has_invalid_way,
+      ParallelPriorityMux(cc_invalid_vec.zipWithIndex.map(x => x._1 -> x._2.U((wayBits + 1).W))),
       ucWay
     )
     (cc_has_invalid_way | uc_has_invalid_way, ccWay, uc_has_invalid_way, ucWay)
@@ -158,8 +162,6 @@ class Directory(implicit p: Parameters) extends L2Module {
 
   val tagArray  = Seq.fill(2)(Module(new SRAMTemplate(UInt(tagBits.W), sets, ways, singlePort = true)))
   val metaArray = Seq.fill(2)(Module(new SRAMTemplate(new MetaEntry, sets, ways, singlePort = true)))
-  val tagRead  = Vec(ways * 2, UInt(tagBits.W))
-  val metaRead = Vec(ways * 2, new MetaEntry())
 
   val resetFinish = RegInit(false.B)
   val resetIdx = RegInit((sets - 1).U)
@@ -185,8 +187,8 @@ class Directory(implicit p: Parameters) extends L2Module {
   val refillReqValid_s3 = RegNext(refillReqValid_s2, false.B)
 
   // Tag/Meta R
-  tagRead := tagArray.map(_.io.r(io.read.fire, io.read.bits.set).resp.data).flatten
-  metaRead := metaArray.map(_.io.r(io.read.fire, io.read.bits.set).resp.data).flatten
+  val tagRead = VecInit(tagArray.map(_.io.r(io.read.fire, io.read.bits.set).resp.data).flatten)
+  val metaRead = VecInit(metaArray.map(_.io.r(io.read.fire, io.read.bits.set).resp.data).flatten)
   // Tag/Meta W
   for (i <- 0 until 2) {
     tagArray(i).io.w(
@@ -209,8 +211,11 @@ class Directory(implicit p: Parameters) extends L2Module {
   val tagMatchVec = tagAll_s3.map(_ (tagBits - 1, 0) === req_s3.tag)
   val metaValidVec = metaAll_s3.map(_.state =/= MetaData.INVALID)
   val hitVec = tagMatchVec.zip(metaValidVec).map(x => x._1 && x._2)
+  val (hitVec_l, hitVec_h) = hitVec.splitAt(hitVec.length)
 
-  val hitWay = OHToUInt(hitVec)
+  val hitWay_l = OHToUInt(hitVec_l)
+  val hitLow = Cat(hitVec_l).orR
+  val hitWay = Mux(hitLow, hitWay_l, OHToUInt(hitVec))
   val replaceWay = WireInit(UInt((wayBits + 1).W), 0.U)
   val (ccInv, ccInvalidWay, ucInv, ucInvalidWay) = invalid_way_sel(metaAll_s3, replaceWay)
   val chosenCcWay = Mux(ccInv, ccInvalidWay, replaceWay)
@@ -219,48 +224,57 @@ class Directory(implicit p: Parameters) extends L2Module {
   // TODO: consider remove this is not used for better timing
   // for retry bug fixing: if the chosenway cause retry last time, choose another way
   // TODO: wayMask need to be 8 bits
+  val doubleWayMask = Fill(2, req_s3.wayMask)
   val ccFinalWay = Mux(
-    req_s3.wayMask(chosenCcWay),
+    doubleWayMask(chosenCcWay),
     chosenCcWay,
     PriorityEncoder(req_s3.wayMask)
   )(wayBits, 0)
   val ucFinalWay = Mux(
-    req_s3.wayMask(Cat("b0".U, chosenUcWay)) & req_s3.wayMask(Cat("b1".U, chosenUcWay)),
+    doubleWayMask(Cat("b0".U, chosenUcWay)) && doubleWayMask(Cat("b1".U, chosenUcWay)),
     chosenUcWay,
     PriorityEncoder(req_s3.wayMask)
   )(wayBits - 1, 0)
+  val finalWay = Mux(io.fromMainPipe_s3.wdataCompressible, ccFinalWay, ucFinalWay)
 
   val hit_s3 = Cat(hitVec).orR
 //  val ccMeta_s3 = metaAll_s3(hitWay)
-  val way_s3 = Mux(hit_s3, hitWay, ccFinalWay) // TODO: consider ucFinalWay
-  val leftHitWay = Cat("b0".U, hitWay(wayBits - 1, 0))
-  val rightHitWay = Cat("b1".U, hitWay(wayBits - 1, 0))
-  val meta_s3 = VecInit(metaAll_s3(leftHitWay), metaAll_s3(rightHitWay))
-//  val ccTag_s3 = tagAll_s3(ccWay_s3)
-  val tag_s3 = VecInit(tagAll_s3(leftHitWay), tagAll_s3(rightHitWay))
+  val way_s3 = Mux(hit_s3, hitWay, finalWay)
+
+  def l(way: UInt) = Cat("b0".U, way(wayBits - 1, 0))
+  def r(way: UInt) = Cat("b1".U, way(wayBits - 1, 0))
+
+  val meta_s3 = VecInit(metaAll_s3(l(way_s3)), metaAll_s3(r(way_s3)))
+  val tag_s3 = VecInit(tagAll_s3(l(way_s3)), tagAll_s3(r(way_s3)))
   val set_s3 = req_s3.set
   val replacerInfo_s3 = req_s3.replacerInfo
 
   io.resp.valid      := reqValid_s3
   io.resp.bits.hit   := hit_s3
   io.resp.bits.way   := hitWay
-//  io.resp.bits.ccMask  := UIntToOH(ccWay_s3(wayBits), 2)
-//  io.resp.bits.ucWay   := ucWay_s3
   io.resp.bits.meta  := meta_s3
-//  io.resp.bits.ucMeta  := ucMeta_s3
-//  io.resp.bits.ccTag   := ccTag_s3
   io.resp.bits.tag   := tag_s3
   io.resp.bits.set   := set_s3
   io.resp.bits.error := false.B  // depends on ECC
   io.resp.bits.replacerInfo := replacerInfo_s3
+  when (RegNext((tag_s3(0) =/= tag_s3(1)) && meta_s3.map(_.state =/= INVALID).reduce(_ && _))) {
+    assert(RegNext(meta_s3(0).compressed === true.B && meta_s3(1).compressed === true.B),
+      "there can't be two valid uncompressed way in a block")
+  }
+  when (RegNext((tag_s3(0) === tag_s3(1)) && meta_s3.map(_.state =/= INVALID).reduce(_ && _))) {
+    assert(RegNext(meta_s3(0).compressed === false.B && meta_s3(1).compressed === false.B),
+      "err2")
+  }
+  when (RegNext(meta_s3(0).state === INVALID && meta_s3(1).state =/= INVALID)) {
+    assert(RegNext(meta_s3(1).compressed === true.B))
+  }
+  when (RegNext(meta_s3(1).state === INVALID && meta_s3(0).state =/= INVALID)) {
+    assert(RegNext(meta_s3(0).compressed === true.B))
+  }
 
   dontTouch(io)
   metaArray.foreach(meta => dontTouch(meta.io))
   tagArray.foreach(tag => dontTouch(tag.io))
-//  dontTouch(metaArray(0).io)
-//  dontTouch(metaArray(1).io)
-//  dontTouch(tagArray(0).io)
-//  dontTouch(tagArray(1).io)
 
   io.read.ready := !io.metaWReq.map(_.valid).reduce(_ | _) &&
     !io.tagWReq.map(_.valid).reduce(_ | _) &&
@@ -271,14 +285,14 @@ class Directory(implicit p: Parameters) extends L2Module {
   // or the way is using by Alias-Acquire (hit), we cancel the Grant and LET IT RETRY
 
   // comparing set is done at Stage2 for better timing
-  val wayConflictPartI  = RegEnable(VecInit(io.msInfo.map(s =>
-    s.valid && s.bits.set === req_s2.set)).asUInt, refillReqValid_s2)
+  val wayConflictPartI  = RegEnable(VecInit(io.msInfo.zipWithIndex.map{case(s,i) =>
+    s.valid && s.bits.set === req_s2.set && req_s2.mshrId =/= i.U}).asUInt, refillReqValid_s2)
 
   val wayConflictPartII = VecInit(io.msInfo.map(s =>
-  // TODO: add ccWay and ucWay compare
-    (s.bits.blockRefill || s.bits.dirHit) && s.bits.way === ccFinalWay
+    (s.bits.blockRefill || s.bits.dirHit) && s.bits.way(wayBits - 1, 0) === finalWay(wayBits - 1, 0)
   )).asUInt
   val refillRetry = (wayConflictPartI & wayConflictPartII).orR
+  val wayConflict = wayConflictPartI & wayConflictPartII; dontTouch(wayConflict)
 
   /* ======!! Replacement logic !!====== */
   /* ====== Read, choose replaceWay ====== */
@@ -295,23 +309,40 @@ class Directory(implicit p: Parameters) extends L2Module {
 
   replaceWay := repl.get_replace_way(repl_state_s3)
 
-  def l(way: UInt) = Cat("b0".U, way(wayBits - 1, 0))
-  def r(way: UInt) = Cat("b1".U, way(wayBits - 1, 0))
-
   io.replResp.valid := refillReqValid_s3
-  io.replResp.bits.compressible.tag := VecInit(tagAll_s3(l(ccFinalWay)), tagAll_s3(r(ccFinalWay)))
-  io.replResp.bits.compressible.set := req_s3.set
-  io.replResp.bits.compressible.way := ccFinalWay
-  io.replResp.bits.compressible.meta := VecInit(metaAll_s3(l(ccFinalWay)), metaAll_s3(r(ccFinalWay)))
-  io.replResp.bits.compressible.mshrId := req_s3.mshrId
-  io.replResp.bits.compressible.retry := refillRetry
-
-  io.replResp.bits.uncompressible.tag := VecInit(tagAll_s3(l(ucFinalWay)), tagAll_s3(r(ucFinalWay)))
-  io.replResp.bits.uncompressible.set := req_s3.set
-  io.replResp.bits.uncompressible.way := ucFinalWay
-  io.replResp.bits.uncompressible.meta := VecInit(metaAll_s3(l(ucFinalWay)), metaAll_s3(r(ucFinalWay)))
-  io.replResp.bits.uncompressible.mshrId := req_s3.mshrId
-  io.replResp.bits.uncompressible.retry := refillRetry
+  io.replResp.bits.tag := VecInit(tagAll_s3(l(finalWay)), tagAll_s3(r(finalWay)))
+  io.replResp.bits.set := req_s3.set
+  io.replResp.bits.way := finalWay
+  val replMeta = VecInit(metaAll_s3(l(finalWay)), metaAll_s3(r(finalWay)))
+  when (RegNext((io.replResp.bits.tag(0) =/= io.replResp.bits.tag(1)) && replMeta.map(_.state =/= INVALID).reduce(_ && _))) {
+    assert(RegNext(replMeta(0).compressed === true.B && replMeta(1).compressed === true.B),
+      "there can't be two valid uncompressed way in a block")
+  }
+  when (RegNext((io.replResp.bits.tag(0) === io.replResp.bits.tag(1)) && replMeta.map(_.state =/= INVALID).reduce(_ && _))) {
+    assert(RegNext(replMeta(0).compressed === false.B && replMeta(1).compressed === false.B),
+      "err2")
+  }
+  when (RegNext(replMeta(0).state === INVALID && replMeta(1).state =/= INVALID)) {
+    assert(RegNext(replMeta(1).compressed === true.B))
+  }
+  when (RegNext(replMeta(1).state === INVALID && replMeta(0).state =/= INVALID)) {
+    assert(RegNext(replMeta(0).compressed === true.B))
+  }
+  io.replResp.bits.meta := replMeta
+  io.replResp.bits.mshrId := req_s3.mshrId
+  io.replResp.bits.retry := refillRetry
+  val replSide = finalWay(wayBits)
+  val ccReleaseTask = Mux(
+    replMeta(replSide).state === INVALID,
+    "b00".U,
+    UIntToOH(replSide, 2)
+  )
+  val ucReleaseTask = Mux(!replMeta(0).compressed && replMeta(0).state =/= INVALID,
+    "b01".U,
+    Cat(Seq.tabulate(2)(i => replMeta(i).state =/= INVALID).reverse)
+  )
+  val releaseTask = Mux(io.fromMainPipe_s3.wdataCompressible, ccReleaseTask, ucReleaseTask)
+  io.replResp.bits.releaseTask := releaseTask
 
   /* ====== Update ====== */
   // update replacer only when A hit or refill, at stage 3
@@ -381,5 +412,5 @@ class Directory(implicit p: Parameters) extends L2Module {
   }
 
   XSPerfAccumulate(cacheParams, "dirRead_cnt", io.read.fire)
-  XSPerfAccumulate(cacheParams, "choose_busy_way", reqValid_s3 && !req_s3.wayMask(chosenCcWay))
+  XSPerfAccumulate(cacheParams, "choose_busy_way", reqValid_s3 && !doubleWayMask(chosenCcWay))
 }

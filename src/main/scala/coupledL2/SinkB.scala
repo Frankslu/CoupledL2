@@ -56,7 +56,7 @@ class SinkB(implicit p: Parameters) extends L2Module {
     task.fromL2pft.foreach(_ := false.B)
     task.needHint.foreach(_ := false.B)
     task.dirty := false.B
-    task.way := 0.U(wayBits.W)
+    task.way := 0.U((wayBits + 1).W)
     task.meta := 0.U.asTypeOf(new MetaEntry)
     task.metaWen := false.B
     task.tagWen := false.B
@@ -66,6 +66,8 @@ class SinkB(implicit p: Parameters) extends L2Module {
     task.replTask := false.B
     task.mergeA := false.B
     task.aMergeTask := 0.U.asTypeOf(new MergeTaskBundle)
+    task.metaVec := DontCare
+    task.releaseBuf_rMask := DontCare
     task
   }
   val task = fromTLBtoTaskBundle(io.b.bits)
@@ -76,8 +78,10 @@ class SinkB(implicit p: Parameters) extends L2Module {
   )).asUInt.orR
 
   // unable to accept incoming B req because same-addr Release to L3 and have not received ReleaseAck, and some MSHR replaced block and cannot nest
+  // TODO: consider better
   val replaceConflictMask = VecInit(io.msInfo.map(s =>
-    s.valid && s.bits.set === task.set && s.bits.metaTag === task.tag && s.bits.blockRefill && !s.bits.w_releaseack
+    s.valid && s.bits.set === task.set && s.bits.metaTag(0) === task.tag && s.bits.blockRefill && !s.bits.w_releaseack(0) ||
+      s.valid && s.bits.set === task.set && s.bits.metaTag(1) === task.tag && s.bits.blockRefill && !s.bits.w_releaseack(1)
   )).asUInt
   val replaceConflict = replaceConflictMask.orR
 

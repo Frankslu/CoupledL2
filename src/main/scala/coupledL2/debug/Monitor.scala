@@ -17,7 +17,10 @@ class MainpipeMoni(implicit p: Parameters) extends L2Bundle {
   val task_s5 = ValidIO(new TaskBundle())
   val dirResult_s3 = new DirResult
   val allocMSHR_s3 = ValidIO(UInt(mshrBits.W))
-  val metaW_s3 = ValidIO(new MetaWrite)
+  val metaW_s3 = Vec(2, ValidIO(new MetaWrite))
+  val retry = Bool()
+  val replResult = new ReplacerResult
+  val way = UInt((wayBits + 1).W)
 }
 
 class CPL2S3Info(implicit p: Parameters) extends L2Bundle {
@@ -29,13 +32,16 @@ class CPL2S3Info(implicit p: Parameters) extends L2Bundle {
   val sset = UInt(setBits.W) // set is C++ common word
 
   val dirHit = Bool()
-  val dirWay = UInt(wayBits.W)
+  val dirWay = UInt((wayBits + 1).W)
   val allocValid = Bool()
   val allocPtr = UInt(mshrBits.W)
   val mshrId = UInt(mshrBits.W)
 
-  val metaWvalid = Bool()
-  val metaWway = UInt(wayBits.W)
+  val metaWvalid1 = Bool()
+  val metaWvalid2 = Bool()
+  val metaWway = UInt((wayBits + 1).W)
+
+  val retry = Bool()
 }
 
 class Monitor(implicit p: Parameters) extends L2Module {
@@ -62,13 +68,20 @@ class Monitor(implicit p: Parameters) extends L2Module {
 //    "C Release should always hit or have some MSHR meta nested, Tag %x Set %x",
 //    req_s3.tag, req_s3.set)
 
+  // for (i <- 0 until 2) {
+  val hitSide = dirResult_s3.way(wayBits)
   assert(RegNext(!(s3_valid && !mshr_req_s3 && dirResult_s3.hit &&
-    meta_s3.state === TRUNK && !meta_s3.clients.orR)),
+    meta_s3(hitSide).state === TRUNK && !meta_s3(hitSide).clients.orR)),
     "Trunk should have some client hit")
 
-  assert(RegNext(!(s3_valid && req_s3.fromC && dirResult_s3.hit &&
-    !meta_s3.clients.orR)),
+  assert(RegNext(!(s3_valid && req_s3.fromC && dirResult_s3.hit && !mshr_req_s3 &&
+    !meta_s3(hitSide).clients.orR)),
     "Invalid Client should not send Release")
+  
+  when (RegNext(s3_valid && req_s3.fromC && !mshr_req_s3)) {
+    assert(RegNext(dirResult_s3.hit), "L1 release must hit")
+  }
+  // }
 
   // assertion for set blocking
   // A channel task @s1 never have same-set task @s2/s3
@@ -96,12 +109,16 @@ class Monitor(implicit p: Parameters) extends L2Module {
     s3Info.tag := req_s3.tag
     s3Info.sset := req_s3.set
     s3Info.dirHit := dirResult_s3.hit
-    s3Info.dirWay := dirResult_s3.way
+    s3Info.dirWay := mp.way
     s3Info.allocValid := mp.allocMSHR_s3.valid
     s3Info.allocPtr := mp.allocMSHR_s3.bits
     s3Info.mshrId := req_s3.mshrId
-    s3Info.metaWvalid := mp.metaW_s3.valid
-    s3Info.metaWway := OHToUInt(mp.metaW_s3.bits.wayOH)
+    // s3Info.metaWvalid := VecInit(mp.metaW_s3.map(_.valid))
+    s3Info.metaWvalid1 := mp.metaW_s3(1).valid
+    s3Info.metaWvalid2 := mp.metaW_s3(0).valid
+    // s3Info.metaWway := VecInit(mp.metaW_s3.map(x => OHToUInt(x.bits.wayOH)))
+    s3Info.metaWway := mp.metaW_s3.map(x => OHToUInt(x.bits.wayOH)).reduce(_ | _)
+    s3Info.retry := mp.retry
 
     table.log(s3Info, s3_valid, s"L2${hartId}_${p(SliceIdKey)}", clock, reset)
   }

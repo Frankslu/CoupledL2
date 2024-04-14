@@ -51,13 +51,13 @@ class ProbeQueue(implicit p: Parameters) extends L2Module {
     if (i == 0) {
       prbq_in_sel(i) := ~prbq_valid_reg(i)
     } else {
-      prbq_in_sel(i) := ~prbq_valid_reg(i) & prbq_valid_reg.asUInt(i - 1, 0).andR
+      prbq_in_sel(i) := (~prbq_valid_reg(i)).asBool & prbq_valid_reg.asUInt(i - 1, 0).andR
     }
     prbq_alloc(i) := io.sinkB.valid & prbq_in_sel(i)
 
     // free a entry of probe queue
     prbq_out_sel(i) := ~(prbq_valid_reg.asUInt & prbq_older_arr(i)).orR
-    prbq_free(i)    := prbq_valid_reg(i) & prbq_out_sel(i) & (~io.arb_busy_s0 | ~prb_valid_s0_reg)
+    prbq_free(i)    := prbq_valid_reg(i) & prbq_out_sel(i) & ((~io.arb_busy_s0).asBool | (~prb_valid_s0_reg).asBool)
 
     when(prbq_alloc(i)) {
       prbq_valid_reg(i) := io.sinkB.valid
@@ -72,19 +72,19 @@ class ProbeQueue(implicit p: Parameters) extends L2Module {
       prbq_older_arr(i) := ~prbq_alloc.asUInt
     }
     .elsewhen(prbq_alloc.asUInt.orR) {
-      prbq_older_arr(i) := prbq_older_arr(i) & ~prbq_alloc.asUInt
+      prbq_older_arr(i) := prbq_older_arr(i) & (~prbq_alloc.asUInt).asUInt
     }
   }
 
-  val prb_valid_s0_en = (~prb_valid_s0_reg & prbq_valid_reg.asUInt.orR) |
-                        (prb_valid_s0_reg & ~prbq_valid_reg.asUInt.orR & ~io.arb_busy_s0)
-  val prb_valid_s0_in = ~prb_valid_s0_reg & prbq_valid_reg.asUInt.orR
+  val prb_valid_s0_en = ((~prb_valid_s0_reg).asBool & prbq_valid_reg.asUInt.orR) |
+                        (prb_valid_s0_reg & (~prbq_valid_reg.asUInt.orR).asBool & (~io.arb_busy_s0).asBool)
+  val prb_valid_s0_in = (~prb_valid_s0_reg).asBool & prbq_valid_reg.asUInt.orR
   when(prb_valid_s0_en) {
     prb_valid_s0_reg := prb_valid_s0_in
   }
 
-  val prb_bits_s0_en = (prbq_valid_reg.asUInt.orR & ~prb_valid_s0_reg) |
-                       (prbq_valid_reg.asUInt.orR & ~io.arb_busy_s0)
+  val prb_bits_s0_en = (prbq_valid_reg.asUInt.orR & (~prb_valid_s0_reg).asBool) |
+                       (prbq_valid_reg.asUInt.orR & (~io.arb_busy_s0).asBool)
   val prbBitsWidth   = prb_bits_s0_reg.asUInt.getWidth
   val prb_bits_s0_in = prbq_bits_reg.zipWithIndex.map { case (x, i) => x.asUInt & Fill(prbBitsWidth, prbq_free(i)) }.reduce((x, y) => x | y)
   when(prb_bits_s0_en) {

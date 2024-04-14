@@ -53,7 +53,8 @@ class Slice()(implicit p: Parameters) extends L2Module {
   val sourceC = Module(new SourceC)
   val grantBuf = Module(new GrantBuffer)
   val refillBuf = Module(new MSHRBuffer(wPorts = 1))
-  val releaseBuf = Module(new MSHRBuffer(wPorts = 3))
+  val releaseBuf = Seq.fill(2)(Module(new MSHRBuffer(wPorts = 3)))
+  val compressBuf = Module(new MSHRBuffer(wPorts = 1))
 
   val prbq = Module(new ProbeQueue())
   prbq.io <> DontCare // @XiaBin TODO
@@ -75,7 +76,9 @@ class Slice()(implicit p: Parameters) extends L2Module {
   reqArb.io.taskToPipe_s2 <> mainPipe.io.taskFromArb_s2
   reqArb.io.mshrTask <> mshrCtl.io.mshrTask
   reqArb.io.refillBufRead_s2 <> refillBuf.io.r
-  reqArb.io.releaseBufRead_s2 <> releaseBuf.io.r
+  reqArb.io.releaseBufRead_s2 <> releaseBuf(0).io.r
+  reqArb.io.releaseBufRead_s2 <> releaseBuf(1).io.r
+  reqArb.io.compressBufRead_s3 <> compressBuf.io.r
   reqArb.io.fromMSHRCtl := mshrCtl.io.toReqArb
   reqArb.io.fromMainPipe := mainPipe.io.toReqArb
   reqArb.io.fromGrantBuffer := grantBuf.io.toReqArb
@@ -85,7 +88,6 @@ class Slice()(implicit p: Parameters) extends L2Module {
   mshrCtl.io.resps.sinkC := sinkC.io.resp
   mshrCtl.io.resps.sinkD := refillUnit.io.resp
   mshrCtl.io.resps.sourceC := sourceC.io.resp
-  mshrCtl.io.nestedwb := mainPipe.io.nestedwb
   mshrCtl.io.aMergeTask := a_reqBuf.io.aMergeTask
   mshrCtl.io.replResp <> directory.io.replResp
   mainPipe.io.replResp <> directory.io.replResp
@@ -94,6 +96,7 @@ class Slice()(implicit p: Parameters) extends L2Module {
   directory.io.metaWReq <> mainPipe.io.metaWReq
   directory.io.tagWReq <> mainPipe.io.tagWReq
   directory.io.msInfo <> mshrCtl.io.msInfo
+  directory.io.fromMainPipe_s3 <> mainPipe.io.toDir
 
   dataStorage.io.req <> mainPipe.io.toDS.req_s3
   dataStorage.io.wdata := mainPipe.io.toDS.wdata_s3
@@ -102,10 +105,14 @@ class Slice()(implicit p: Parameters) extends L2Module {
   mainPipe.io.fromMSHRCtl <> mshrCtl.io.toMainPipe
   mainPipe.io.bufResp <> sinkC.io.bufResp
   mainPipe.io.toDS.rdata_s5 := dataStorage.io.rdata
-  mainPipe.io.refillBufResp_s3.valid := RegNext(refillBuf.io.r.valid, false.B)
-  mainPipe.io.refillBufResp_s3.bits := refillBuf.io.resp.data
-  mainPipe.io.releaseBufResp_s3.valid := RegNext(releaseBuf.io.r.valid, false.B)
-  mainPipe.io.releaseBufResp_s3.bits := releaseBuf.io.resp.data
+  mainPipe.io.refillBufResp_s3.valid    := RegNext(refillBuf.io.r.valid, false.B)
+  mainPipe.io.refillBufResp_s3.bits     := refillBuf.io.resp.data
+  mainPipe.io.releaseBufResp1_s3.valid  := RegNext(releaseBuf(0).io.r.valid, false.B)
+  mainPipe.io.releaseBufResp1_s3.bits   := releaseBuf(0).io.resp.data
+  mainPipe.io.releaseBufResp2_s3.valid  := RegNext(releaseBuf(1).io.r.valid, false.B)
+  mainPipe.io.releaseBufResp2_s3.bits   := releaseBuf(1).io.resp.data
+  mainPipe.io.compressBufResp_s3.valid  := RegNext(compressBuf.io.r.valid, false.B)
+  mainPipe.io.compressBufResp_s3.bits   := compressBuf.io.resp.data
   mainPipe.io.fromReqArb.status_s1 := reqArb.io.status_s1
   mainPipe.io.grantBufferHint := grantBuf.io.l1Hint
   mainPipe.io.globalCounter := grantBuf.io.globalCounter
@@ -113,14 +120,25 @@ class Slice()(implicit p: Parameters) extends L2Module {
 
   // priority: nested-ReleaseData / probeAckData [NEW] > mainPipe DS rdata [OLD]
   // 0/1 might happen at the same cycle with 2
-  releaseBuf.io.w(0).valid := mshrCtl.io.nestedwbDataId.valid
-  releaseBuf.io.w(0).bits.data := mainPipe.io.nestedwbData
-  releaseBuf.io.w(0).bits.id := mshrCtl.io.nestedwbDataId.bits
-  releaseBuf.io.w(1) <> sinkC.io.releaseBufWrite
-  releaseBuf.io.w(1).bits.id := mshrCtl.io.releaseBufWriteId
-  releaseBuf.io.w(2) <> mainPipe.io.releaseBufWrite
+  for (i <- 0 until 2){
+    // for nest release
+    releaseBuf(i).io.w(0).valid := mshrCtl.io.nestedwbDataId.valid &&
+      mshrCtl.io.nestedwbDataMask(i)
+    releaseBuf(i).io.w(0).bits.data := mainPipe.io.nestedwbData
+    releaseBuf(i).io.w(0).bits.id := mshrCtl.io.nestedwbDataId.bits
+    // for pback
+    releaseBuf(i).io.w(1).valid := sinkC.io.releaseBufWrite.valid &&
+      mshrCtl.io.releaseBufWriteMask(i)
+    releaseBuf(i).io.w(1).bits.data := sinkC.io.releaseBufWrite.bits.data
+    releaseBuf(i).io.w(1).bits.id := mshrCtl.io.releaseBufWriteId
+
+    // for mshr grant
+    releaseBuf(i).io.w(2) <> mainPipe.io.releaseBufWrite(i)
+  }
 
   refillBuf.io.w(0) <> refillUnit.io.refillBufWrite
+
+  compressBuf.io.w(0) <> mainPipe.io.compressBufWrite
 
   sourceC.io.in <> mainPipe.io.toSourceC
   sourceC.io.pipeStatusVec := reqArb.io.status_vec ++ mainPipe.io.status_vec_toC

@@ -50,6 +50,7 @@ class RequestArb(implicit p: Parameters) extends L2Module {
     /* send mshrBuf read request */
     val refillBufRead_s2 = ValidIO(new MSHRBufRead)
     val releaseBufRead_s2 = ValidIO(new MSHRBufRead)
+    val compressBufRead_s3 = ValidIO(new MSHRBufRead)
 
     /* status of each pipeline stage */
     val status_s1 = Output(new PipeEntranceStatus) // set & tag of entrance status
@@ -130,6 +131,9 @@ class RequestArb(implicit p: Parameters) extends L2Module {
   // mshr_task_s1 is s1_[reg]
   // task_s1 is [wire] to s2_reg
   val task_s1 = Mux(mshr_task_s1.valid, mshr_task_s1, chnl_task_s1)
+  val chosenTask = Mux(mshr_task_s1.valid, "b1000".U,
+    ParallelPriorityMux(sinkValids, Seq("b0100".U, "b0010".U, "b0001".U))
+  )
 
   io.taskInfo_s1 := mshr_task_s1
 
@@ -140,7 +144,10 @@ class RequestArb(implicit p: Parameters) extends L2Module {
   io.dirRead_s1.bits.tag := task_s1.bits.tag
   // invalid way which causes mshr_retry
   // TODO: random waymask can be used to avoid multi-way conflict
-  io.dirRead_s1.bits.wayMask := Mux(mshr_task_s1.valid && mshr_task_s1.bits.mshrRetry, (~(1.U(cacheParams.ways.W) << mshr_task_s1.bits.way)), Fill(cacheParams.ways, "b1".U))
+  io.dirRead_s1.bits.wayMask := Mux(mshr_task_s1.valid && mshr_task_s1.bits.mshrRetry,
+    (~(1.U(cacheParams.ways.W) << mshr_task_s1.bits.way(wayBits - 1, 0))).asUInt,
+    Fill(cacheParams.ways, "b1".U)
+  )
   io.dirRead_s1.bits.replacerInfo.opcode := task_s1.bits.opcode
   io.dirRead_s1.bits.replacerInfo.channel := task_s1.bits.channel
   io.dirRead_s1.bits.replacerInfo.reqSource := task_s1.bits.reqSource
@@ -171,7 +178,7 @@ class RequestArb(implicit p: Parameters) extends L2Module {
   // Caution: GrantData-alias may read DataStorage or ReleaseBuf instead
   // Release-replTask also read refillBuf and then write to DS
   io.refillBufRead_s2.valid := mshrTask_s2 && (
-    task_s2.bits.fromB && task_s2.bits.opcode(2, 1) === ProbeAck(2, 1) && task_s2.bits.replTask ||
+    task_s2.bits.fromB && task_s2.bits.opcode(2, 1) === ProbeAck(2, 1) && task_s2.bits.replTask || // WTF? why probeAck read refillBuf
     task_s2.bits.opcode(2, 1) === Release(2, 1) && task_s2.bits.replTask ||
     mshrTask_s2_a_upwards && !task_s2.bits.useProbeData)
   io.refillBufRead_s2.bits.id := task_s2.bits.mshrId
@@ -183,6 +190,12 @@ class RequestArb(implicit p: Parameters) extends L2Module {
     task_s2.bits.fromB && task_s2.bits.opcode === ProbeAckData ||
     mshrTask_s2_a_upwards && task_s2.bits.useProbeData)
   io.releaseBufRead_s2.bits.id := task_s2.bits.mshrId
+
+  // MSHR Release read compressBuffer
+  // in case that the previous release request need to release the other compressed line in same block
+  // TODO: complete the compressbuf read condition
+  io.compressBufRead_s3.valid := mshrTask_s2 && task_s2.bits.opcode === ReleaseData
+  io.compressBufRead_s3.bits.id := task_s2.bits.mshrId
 
   require(beatSize == 2)
 

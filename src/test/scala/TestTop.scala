@@ -313,7 +313,7 @@ class TestTop_L2L3L2()(implicit p: Parameters) extends LazyModule {
         minLatency = 1,
         echoFields = Nil,
         requestFields = Seq(AliasField(2)),
-        responseKeys = cacheParams.respKey
+        responseKeys = cacheParams.respKey,
       )
     ))
     masterNode
@@ -345,7 +345,7 @@ class TestTop_L2L3L2()(implicit p: Parameters) extends LazyModule {
         CacheParameters(
           name = s"l2",
           sets = 128,
-          ways = 4 + 2,
+          ways = (4 + 2) * 2,
           blockGranularity = log2Ceil(128)
         ),
       ),

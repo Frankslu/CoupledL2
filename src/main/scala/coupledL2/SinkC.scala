@@ -87,7 +87,7 @@ class SinkC(implicit p: Parameters) extends L2Module {
     task.fromL2pft.foreach(_ := false.B)
     task.needHint.foreach(_ := false.B)
     task.dirty := false.B
-    task.way := 0.U(wayBits.W)
+    task.way := 0.U((wayBits + 1).W)
     task.meta := 0.U.asTypeOf(new MetaEntry)
     task.metaWen := false.B
     task.tagWen := false.B
@@ -97,6 +97,8 @@ class SinkC(implicit p: Parameters) extends L2Module {
     task.replTask := false.B
     task.mergeA := false.B
     task.aMergeTask := 0.U.asTypeOf(new MergeTaskBundle)
+    task.metaVec := DontCare
+    task.releaseBuf_rMask := DontCare
     task
   }
 
@@ -126,9 +128,11 @@ class SinkC(implicit p: Parameters) extends L2Module {
   }
 
   // C-Release, with new data, comes before repl-Release writes old refill data back to DS
+  // TODO: block releaseData for no-probe side
   val newdataMask = VecInit(io.msInfo.map(s =>
-    s.valid && s.bits.set === taskArb.io.out.bits.set && s.bits.reqTag === taskArb.io.out.bits.tag && s.bits.blockRefill
-  )).asUInt
+    s.valid && s.bits.set === taskArb.io.out.bits.set && (s.bits.blockRefill && s.bits.reqTag === taskArb.io.out.bits.tag ||
+      Seq.tabulate(2)(i => s.bits.metaTag(i) === taskArb.io.out.bits.tag && s.bits.sideCannotNestC(i) && s.bits.sideValidMask(i)).reduce(_ || _)
+  ))).asUInt
   val releaseNeedBlock = taskArb.io.out.bits.opcode === ReleaseData && newdataMask.orR
   taskArb.io.out.ready := io.task.ready && !releaseNeedBlock
   taskArb.io.in.zipWithIndex.foreach {

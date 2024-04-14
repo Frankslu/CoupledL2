@@ -133,29 +133,29 @@ class TopDownMonitor()(implicit p: Parameters) extends L2Module {
     r => !r.hit && r.replacerInfo.reqSource === MemReqSource.Prefetch2L2TP.id.U
   )
 
-  val l2prefetchUseful = dirResultMatchVec(
-    r => reqFromCPU(r) && r.hit && r.meta.prefetch.getOrElse(false.B)
-  )
-  val l2prefetchUsefulBOP = dirResultMatchVec(
-    r => reqFromCPU(r) && r.hit &&
-      r.meta.prefetch.getOrElse(false.B) && r.meta.prefetchSrc.getOrElse(PfSource.NoWhere.id.U) === PfSource.BOP.id.U
-  )
-  val l2prefetchUsefulSMS = dirResultMatchVec(
-    r => reqFromCPU(r) && r.hit &&
-      r.meta.prefetch.getOrElse(false.B) && r.meta.prefetchSrc.getOrElse(PfSource.NoWhere.id.U) === PfSource.SMS.id.U
-  )
-  val l2prefetchUsefulStride = dirResultMatchVec(
-    r => reqFromCPU(r) && r.hit &&
-      r.meta.prefetch.getOrElse(false.B) && r.meta.prefetchSrc.getOrElse(PfSource.NoWhere.id.U) === PfSource.Stride.id.U
-  )
-  val l2prefetchUsefulStream = dirResultMatchVec(
-    r => reqFromCPU(r) && r.hit &&
-      r.meta.prefetch.getOrElse(false.B) && r.meta.prefetchSrc.getOrElse(PfSource.NoWhere.id.U) === PfSource.Stream.id.U
-  )
-  val l2prefetchUsefulTP = dirResultMatchVec(
-    r => reqFromCPU(r) && r.hit &&
-      r.meta.prefetch.getOrElse(false.B) && r.meta.prefetchSrc.getOrElse(PfSource.NoWhere.id.U) === PfSource.TP.id.U
-  )
+  // val l2prefetchUseful = dirResultMatchVec(
+  //   r => reqFromCPU(r) && r.hit && r.meta.prefetch.getOrElse(false.B)
+  // )
+  // val l2prefetchUsefulBOP = dirResultMatchVec(
+  //   r => reqFromCPU(r) && r.hit &&
+  //     r.meta.prefetch.getOrElse(false.B) && r.meta.prefetchSrc.getOrElse(PfSource.NoWhere.id.U) === PfSource.BOP.id.U
+  // )
+  // val l2prefetchUsefulSMS = dirResultMatchVec(
+  //   r => reqFromCPU(r) && r.hit &&
+  //     r.meta.prefetch.getOrElse(false.B) && r.meta.prefetchSrc.getOrElse(PfSource.NoWhere.id.U) === PfSource.SMS.id.U
+  // )
+  // val l2prefetchUsefulStride = dirResultMatchVec(
+  //   r => reqFromCPU(r) && r.hit &&
+  //     r.meta.prefetch.getOrElse(false.B) && r.meta.prefetchSrc.getOrElse(PfSource.NoWhere.id.U) === PfSource.Stride.id.U
+  // )
+  // val l2prefetchUsefulStream = dirResultMatchVec(
+  //   r => reqFromCPU(r) && r.hit &&
+  //     r.meta.prefetch.getOrElse(false.B) && r.meta.prefetchSrc.getOrElse(PfSource.NoWhere.id.U) === PfSource.Stream.id.U
+  // )
+  // val l2prefetchUsefulTP = dirResultMatchVec(
+  //   r => reqFromCPU(r) && r.hit &&
+  //     r.meta.prefetch.getOrElse(false.B) && r.meta.prefetchSrc.getOrElse(PfSource.NoWhere.id.U) === PfSource.TP.id.U
+  // )
 
   val l2demandRequest = dirResultMatchVec(
     r => reqFromCPU(r)
@@ -163,85 +163,85 @@ class TopDownMonitor()(implicit p: Parameters) extends L2Module {
   val l2prefetchLate = io.latePF
 
   // PF Accuracy
-  XSPerfRolling(
-    cacheParams, "L2PrefetchAccuracy",
-    PopCount(l2prefetchUseful), PopCount(l2prefetchSent),
-    1000, clock, reset
-  )
-  XSPerfRolling(
-    cacheParams, "L2PrefetchAccuracyBOP",
-    PopCount(l2prefetchUsefulBOP), PopCount(l2prefetchSentBOP),
-    1000, clock, reset
-  )
-  XSPerfRolling(
-    cacheParams, "L2PrefetchAccuracySMS",
-    PopCount(l2prefetchUsefulSMS), PopCount(l2prefetchSentSMS),
-    1000, clock, reset
-  )
-  XSPerfRolling(
-    cacheParams, "L2PrefetchAccuracyTP",
-    PopCount(l2prefetchUsefulTP), PopCount(l2prefetchSentTP),
-    1000, clock, reset
-  )
-  XSPerfRolling(
-    cacheParams, "L2PrefetchAccuracyStride",
-    PopCount(l2prefetchUsefulStride), PopCount(l2prefetchSentStride),
-    1000, clock, reset
-  )
-  XSPerfRolling(
-    cacheParams, "L2PrefetchAccuracyStream",
-    PopCount(l2prefetchUsefulStream), PopCount(l2prefetchSentStream),
-    1000, clock, reset
-  )
-  XSPerfRolling(
-    cacheParams, "L2PrefetchAccuracyTP",
-    PopCount(l2prefetchUsefulTP), PopCount(l2prefetchSentTP),
-    1000, clock, reset
-  )
+  // XSPerfRolling(
+  //   cacheParams, "L2PrefetchAccuracy",
+  //   PopCount(l2prefetchUseful), PopCount(l2prefetchSent),
+  //   1000, clock, reset
+  // )
+  // XSPerfRolling(
+  //   cacheParams, "L2PrefetchAccuracyBOP",
+  //   PopCount(l2prefetchUsefulBOP), PopCount(l2prefetchSentBOP),
+  //   1000, clock, reset
+  // )
+  // XSPerfRolling(
+  //   cacheParams, "L2PrefetchAccuracySMS",
+  //   PopCount(l2prefetchUsefulSMS), PopCount(l2prefetchSentSMS),
+  //   1000, clock, reset
+  // )
+  // XSPerfRolling(
+  //   cacheParams, "L2PrefetchAccuracyTP",
+  //   PopCount(l2prefetchUsefulTP), PopCount(l2prefetchSentTP),
+  //   1000, clock, reset
+  // )
+  // XSPerfRolling(
+  //   cacheParams, "L2PrefetchAccuracyStride",
+  //   PopCount(l2prefetchUsefulStride), PopCount(l2prefetchSentStride),
+  //   1000, clock, reset
+  // )
+  // XSPerfRolling(
+  //   cacheParams, "L2PrefetchAccuracyStream",
+  //   PopCount(l2prefetchUsefulStream), PopCount(l2prefetchSentStream),
+  //   1000, clock, reset
+  // )
+  // XSPerfRolling(
+  //   cacheParams, "L2PrefetchAccuracyTP",
+  //   PopCount(l2prefetchUsefulTP), PopCount(l2prefetchSentTP),
+  //   1000, clock, reset
+  // )
 
   // PF Late
-  XSPerfRolling(
-    cacheParams, "L2PrefetchLate",
-    PopCount(l2prefetchLate), PopCount(l2prefetchUseful),
-    1000, clock, reset
-  )
+  // XSPerfRolling(
+  //   cacheParams, "L2PrefetchLate",
+  //   PopCount(l2prefetchLate), PopCount(l2prefetchUseful),
+  //   1000, clock, reset
+  // )
 
-  // PF Coverage
-  XSPerfRolling(
-    cacheParams, "L2PrefetchCoverage",
-    PopCount(l2prefetchUseful), PopCount(l2demandRequest),
-    1000, clock, reset
-  )
-  XSPerfRolling(
-    cacheParams, "L2PrefetchCoverageBOP",
-    PopCount(l2prefetchUsefulBOP), PopCount(l2demandRequest),
-    1000, clock, reset
-  )
-  XSPerfRolling(
-    cacheParams, "L2PrefetchCoverageSMS",
-    PopCount(l2prefetchUsefulSMS), PopCount(l2demandRequest),
-    1000, clock, reset
-  )
-  XSPerfRolling(
-    cacheParams, "L2PrefetchCoverageTP",
-    PopCount(l2prefetchUsefulTP), PopCount(l2demandRequest),
-    1000, clock, reset
-  )
-  XSPerfRolling(
-    cacheParams, "L2PrefetchCoverageStride",
-    PopCount(l2prefetchUsefulStride), PopCount(l2demandRequest),
-    1000, clock, reset
-  )
-  XSPerfRolling(
-    cacheParams, "L2PrefetchCoverageStream",
-    PopCount(l2prefetchUsefulStream), PopCount(l2demandRequest),
-    1000, clock, reset
-  )
-  XSPerfRolling(
-    cacheParams, "L2PrefetchCoverageTP",
-    PopCount(l2prefetchUsefulTP), PopCount(l2demandRequest),
-    1000, clock, reset
-  )
+  // // PF Coverage
+  // XSPerfRolling(
+  //   cacheParams, "L2PrefetchCoverage",
+  //   PopCount(l2prefetchUseful), PopCount(l2demandRequest),
+  //   1000, clock, reset
+  // )
+  // XSPerfRolling(
+  //   cacheParams, "L2PrefetchCoverageBOP",
+  //   PopCount(l2prefetchUsefulBOP), PopCount(l2demandRequest),
+  //   1000, clock, reset
+  // )
+  // XSPerfRolling(
+  //   cacheParams, "L2PrefetchCoverageSMS",
+  //   PopCount(l2prefetchUsefulSMS), PopCount(l2demandRequest),
+  //   1000, clock, reset
+  // )
+  // XSPerfRolling(
+  //   cacheParams, "L2PrefetchCoverageTP",
+  //   PopCount(l2prefetchUsefulTP), PopCount(l2demandRequest),
+  //   1000, clock, reset
+  // )
+  // XSPerfRolling(
+  //   cacheParams, "L2PrefetchCoverageStride",
+  //   PopCount(l2prefetchUsefulStride), PopCount(l2demandRequest),
+  //   1000, clock, reset
+  // )
+  // XSPerfRolling(
+  //   cacheParams, "L2PrefetchCoverageStream",
+  //   PopCount(l2prefetchUsefulStream), PopCount(l2demandRequest),
+  //   1000, clock, reset
+  // )
+  // XSPerfRolling(
+  //   cacheParams, "L2PrefetchCoverageTP",
+  //   PopCount(l2prefetchUsefulTP), PopCount(l2demandRequest),
+  //   1000, clock, reset
+  // )
 
   XSPerfAccumulate(cacheParams, "l2prefetchSent", PopCount(l2prefetchSent))
   XSPerfAccumulate(cacheParams, "l2prefetchSentBOP", PopCount(l2prefetchSentBOP))
@@ -249,12 +249,12 @@ class TopDownMonitor()(implicit p: Parameters) extends L2Module {
   XSPerfAccumulate(cacheParams, "l2prefetchSentStride", PopCount(l2prefetchSentStride))
   XSPerfAccumulate(cacheParams, "l2prefetchSentStream", PopCount(l2prefetchSentStream))
   XSPerfAccumulate(cacheParams, "l2prefetchSentTP", PopCount(l2prefetchSentTP))
-  XSPerfAccumulate(cacheParams, "l2prefetchUseful", PopCount(l2prefetchUseful))
-  XSPerfAccumulate(cacheParams, "l2prefetchUsefulBOP", PopCount(l2prefetchUsefulBOP))
-  XSPerfAccumulate(cacheParams, "l2prefetchUsefulSMS", PopCount(l2prefetchUsefulSMS))
-  XSPerfAccumulate(cacheParams, "l2prefetchUsefulStride", PopCount(l2prefetchUsefulStride))
-  XSPerfAccumulate(cacheParams, "l2prefetchUsefulStream", PopCount(l2prefetchUsefulStream))
-  XSPerfAccumulate(cacheParams, "l2prefetchUsefulTP", PopCount(l2prefetchUsefulTP))
+  // XSPerfAccumulate(cacheParams, "l2prefetchUseful", PopCount(l2prefetchUseful))
+  // XSPerfAccumulate(cacheParams, "l2prefetchUsefulBOP", PopCount(l2prefetchUsefulBOP))
+  // XSPerfAccumulate(cacheParams, "l2prefetchUsefulSMS", PopCount(l2prefetchUsefulSMS))
+  // XSPerfAccumulate(cacheParams, "l2prefetchUsefulStride", PopCount(l2prefetchUsefulStride))
+  // XSPerfAccumulate(cacheParams, "l2prefetchUsefulStream", PopCount(l2prefetchUsefulStream))
+  // XSPerfAccumulate(cacheParams, "l2prefetchUsefulTP", PopCount(l2prefetchUsefulTP))
   XSPerfAccumulate(cacheParams, "l2demandRequest", PopCount(l2demandRequest))
   XSPerfAccumulate(cacheParams, "l2prefetchLate", PopCount(l2prefetchLate))
 }

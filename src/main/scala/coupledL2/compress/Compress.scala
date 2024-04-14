@@ -31,7 +31,7 @@ class CompressUnit(implicit p: Parameters) extends L2Module with CCParameters {
   val entry_num = blockBytes * 8 / ccEntryBits // current value is 8
   val CC_offsetWidth = log2Ceil(blockBytes * 8) + 1
 
-  val s1_valid = RegInit(false.B)
+  val s1_valid = WireInit(false.B)
   val s1_ready = WireInit(true.B)
   // val s2_valid = RegInit(false.B)
   // val s2_ready = WireInit(true.B)
@@ -67,24 +67,27 @@ class CompressUnit(implicit p: Parameters) extends L2Module with CCParameters {
   }
 
   io.in.ready := s1_ready
-  s1_ready := s1_valid & io.out.ready | ~s1_valid
-  when(s1_ready) {
-    s1_valid := io.in.valid
-  }
+  s1_valid := io.in.valid
+  s1_ready := io.out.ready
+  // when(s1_ready) {
+  //   s1_valid := io.in.valid
+  // }
 
-  val s1_prefixOH = RegEnable(prefixOH, io.in.fire)
-  val s1_compressedEntry = RegEnable(compressedEntry, io.in.fire)
-  val s1_entryOffset = RegEnable(VecInit(entryOffset), io.in.fire)
-  val s1_totalWidth = RegEnable(totalWidth, io.in.fire)
+  // val s1_prefixOH = RegEnable(prefixOH, io.in.fire)
+  // val s1_compressedEntry = RegEnable(compressedEntry, io.in.fire)
+  // val s1_entryOffset = RegEnable(VecInit(entryOffset), io.in.fire)
+  // val s1_totalWidth = RegEnable(totalWidth, io.in.fire)
+  val s1_prefixOH = prefixOH
+  val s1_compressedEntry = compressedEntry
+  val s1_entryOffset = VecInit(entryOffset)
+  val s1_totalWidth = totalWidth
 
   // stage 2
-  val compressedData = s1_compressedEntry
+  val compressedData: UInt = s1_compressedEntry
     .zip(s1_entryOffset)
     .map {
       case (entry, offset) =>
-        val tmp = WireInit(0.U((beatBytes * 8 - ccPrefixBits).W))
-        tmp := entry
-        tmp << offset
+        entry(31, 0) << offset
     }
     .reduce(_ | _)
   val prefix = Cat(s1_prefixOH.reverse.map(prefixOH => OHToUInt(prefixOH)))

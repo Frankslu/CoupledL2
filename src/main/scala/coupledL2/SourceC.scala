@@ -187,7 +187,7 @@ class SourceC(implicit p: Parameters) extends L2Module {
     val next_beat = ParallelPriorityMux(beatsOH, data.asTypeOf(Vec(beatSize, UInt((beatBytes * 8).W))))
     val selOH = PriorityEncoderOH(beatsOH)
     // remaining beats that haven't been sent out
-    val next_beatsOH = beatsOH & ~selOH
+    val next_beatsOH = beatsOH & (~selOH).asUInt
     (next_beat, next_beatsOH)
   }
 

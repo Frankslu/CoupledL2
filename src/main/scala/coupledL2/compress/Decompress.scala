@@ -27,8 +27,8 @@ class DecompressUnit(implicit p: Parameters) extends L2Module with CCParameters 
     UnCompressed
   ).sortBy(_.prefix.litValue)
 
-  val s1_valid = RegInit(false.B)
-  val s1_ready = WireInit(true.B)
+  // val s1_valid = RegInit(false.B)
+  // val s1_ready = WireInit(true.B)
   // val s2_valid = RegInit(false.B)
   // val s2_ready = WireInit(true.B)
 
@@ -52,15 +52,18 @@ class DecompressUnit(implicit p: Parameters) extends L2Module with CCParameters 
       sum +& width
   }
 
-  io.in.ready := s1_ready
-  s1_ready := s1_valid & io.out.ready | ~s1_valid
-  when(s1_ready) {
-    s1_valid := io.in.valid
-  }
+  // io.in.ready := s1_ready
+  // s1_ready := s1_valid & io.out.ready | ~s1_valid
+  // when(s1_ready) {
+  //   s1_valid := io.in.valid
+  // }
 
-  val s1_prefixOH = RegEnable(prefixOH, io.in.fire)
-  val s1_entryOffset = RegEnable(VecInit(entryOffset), io.in.fire)
-  val s1_compressedData = RegEnable(compressedData, io.in.fire)
+  // val s1_prefixOH = RegEnable(prefixOH, io.in.fire)
+  // val s1_entryOffset = RegEnable(VecInit(entryOffset), io.in.fire)
+  // val s1_compressedData = RegEnable(compressedData, io.in.fire)
+  val s1_prefixOH = prefixOH
+  val s1_entryOffset = VecInit(entryOffset)
+  val s1_compressedData = compressedData
 
   // stage 2
   val shifter = s1_entryOffset.map(offset => (s1_compressedData >> offset)(ccEntryBits - 1, 0))
@@ -82,7 +85,8 @@ class DecompressUnit(implicit p: Parameters) extends L2Module with CCParameters 
   // val s2_decompressedData = RegEnable(decompressedData, s2_fire)
 
   io.out.bits := Cat(decompressedData.reverse)
-  io.out.valid := s1_valid
+  io.out.valid := io.in.valid
+  io.in.ready := io.out.ready
 }
 
 object DecompressUnit {
