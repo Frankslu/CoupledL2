@@ -30,9 +30,10 @@ import org.chipsalliance.cde.config.Parameters
 import scala.math.max
 import coupledL2.prefetch._
 import coupledL2.utils.XSPerfAccumulate
+import coupledL2.compress.CCParameters
 import huancun.{TPmetaReq, TPmetaResp}
 
-trait HasCoupledL2Parameters {
+trait HasCoupledL2Parameters extends CCParameters{
   val p: Parameters
   val cacheParams = p(L2ParamKey)
 

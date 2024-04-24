@@ -29,6 +29,9 @@ class PipeBufferResp(implicit p: Parameters) extends L2Bundle {
   val data = Vec(beatSize, UInt((beatBytes * 8).W))
 }
 
+class BlockEntry(implicit p: Parameters) extends L2Bundle {
+
+}
 // SinkC receives upwards Release or ProbeAck:
 // (1) For Release/ReleaseData, send it to RequestArb directly
 // (2) For ProbeAck/ProbeAckData, wakeup w_probeack in MSHR

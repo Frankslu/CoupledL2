@@ -21,6 +21,7 @@ class MainpipeMoni(implicit p: Parameters) extends L2Bundle {
   val retry = Bool()
   val replResult = new ReplacerResult
   val way = UInt((wayBits + 1).W)
+  val nestC = Bool()
 }
 
 class CPL2S3Info(implicit p: Parameters) extends L2Bundle {
@@ -79,7 +80,7 @@ class Monitor(implicit p: Parameters) extends L2Module {
     "Invalid Client should not send Release")
   
   when (RegNext(s3_valid && req_s3.fromC && !mshr_req_s3)) {
-    assert(RegNext(dirResult_s3.hit), "L1 release must hit")
+    assert(RegNext(dirResult_s3.hit || mp.nestC), "L1 release must hit")
   }
   // }
 

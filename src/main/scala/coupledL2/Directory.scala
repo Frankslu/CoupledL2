@@ -211,7 +211,7 @@ class Directory(implicit p: Parameters) extends L2Module {
   val tagMatchVec = tagAll_s3.map(_ (tagBits - 1, 0) === req_s3.tag)
   val metaValidVec = metaAll_s3.map(_.state =/= MetaData.INVALID)
   val hitVec = tagMatchVec.zip(metaValidVec).map(x => x._1 && x._2)
-  val (hitVec_l, hitVec_h) = hitVec.splitAt(hitVec.length)
+  val (hitVec_l, hitVec_h) = hitVec.splitAt(hitVec.length / 2)
 
   val hitWay_l = OHToUInt(hitVec_l)
   val hitLow = Cat(hitVec_l).orR
@@ -335,7 +335,7 @@ class Directory(implicit p: Parameters) extends L2Module {
   val ccReleaseTask = Mux(
     replMeta(replSide).state === INVALID,
     "b00".U,
-    UIntToOH(replSide, 2)
+    Mux(replMeta(replSide).compressed, UIntToOH(replSide, 2), "b01".U)
   )
   val ucReleaseTask = Mux(!replMeta(0).compressed && replMeta(0).state =/= INVALID,
     "b01".U,

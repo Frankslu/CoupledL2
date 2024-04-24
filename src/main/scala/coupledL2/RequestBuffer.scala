@@ -90,8 +90,8 @@ class RequestBuffer(flow: Boolean = true, entries: Int = 4)(implicit p: Paramete
   // TODO: better condition
   def addrConflict(a: TaskBundle, s: MSHRInfo): Bool = {
     a.set === s.set && (a.tag === s.reqTag ||
-      a.tag === s.metaTag(0) && s.needRelease && s.sideValidMask(0) ||
-      a.tag === s.metaTag(1) && s.needRelease && s.sideValidMask(1))
+      a.tag === s.metaTag(0) && (s.needRelease(0) || !s.w_replResp && s.sideValidMask(0)) ||
+      a.tag === s.metaTag(1) && (s.needRelease(1) || !s.w_replResp && s.sideValidMask(1)))
   }
   def conflictMask(a: TaskBundle): UInt = VecInit(io.mshrInfo.map(s =>
     s.valid && addrConflict(a, s.bits) && !s.bits.willFree)).asUInt
