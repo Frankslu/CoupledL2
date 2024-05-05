@@ -53,6 +53,7 @@ class MSHRCtl(implicit p: Parameters) extends L2Module {
     }
     val toMainPipe = new Bundle() {
       val mshr_alloc_ptr = Output(UInt(mshrBits.W))
+      val nestCData = Output(Bool())
       val nestC = Output(Bool())
     }
 
@@ -177,7 +178,8 @@ class MSHRCtl(implicit p: Parameters) extends L2Module {
   io.nestedwbDataMask := ParallelPriorityMux(mshrs.zipWithIndex.map {
     case (mshr, i) => (mshr.io.nestedwbData.asUInt.orR, mshr.io.nestedwbData.asUInt)
   })
-  io.toMainPipe.nestC := io.nestedwbDataId.valid
+  io.toMainPipe.nestCData := io.nestedwbDataId.valid
+  io.toMainPipe.nestC := mshrs.map(_.io.hasNestwb).reduce(_ | _)
   assert(RegNext(PopCount(mshrs.map(_.io.nestedwbData.asUInt.orR)) <= 1.U), "should only be one nestedwbData")
 
   dontTouch(io.sourceA)
@@ -189,7 +191,8 @@ class MSHRCtl(implicit p: Parameters) extends L2Module {
   )
   // Performance counters
   XSPerfAccumulate(cacheParams, "capacity_conflict_to_sinkA", a_mshrFull)
-  XSPerfAccumulate(cacheParams, "capacity_conflict_to_sinkB", mshrFull)
+  XSPerfAccumulate(cacheParams, "capacity_conflict_to_sinkB", b_mshrFull)
+  XSPerfAccumulate(cacheParams, "capacity_conflict_to_sinkC", mshrFull)
   XSPerfHistogram(cacheParams, "mshr_alloc", io.toMainPipe.mshr_alloc_ptr,
     enable = io.fromMainPipe.mshr_alloc_s3.valid,
     start = 0, stop = mshrsAll, step = 1)

@@ -57,7 +57,7 @@ trait HasCoupledL2Parameters extends CCParameters{
          
   val pageOffsetBits = log2Ceil(cacheParams.pageBytes)
 
-  val bufBlocks = 4 // hold data that flows in MainPipe
+  val bufBlocks = 32 // hold data that flows in MainPipe
   val bufIdxBits = log2Up(bufBlocks)
 
   val releaseBufWPorts = 3 // sinkC & mainPipe s5 & mainPipe s3 (nested)

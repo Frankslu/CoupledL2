@@ -55,6 +55,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
     val tasks = new MSHRTasks()
     val resps = new MSHRResps()
     val nestedwb = Input(new NestedWriteback)
+    val hasNestwb = Output(Bool())
     val nestedwbData = Output(Vec(2, Bool()))
     val aMergeTask = Flipped(ValidIO(new TaskBundle))
     val replResp = Flipped(ValidIO(new ReplacerResult))
@@ -171,7 +172,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
       !state.s_pprobe,
       req.param,
       Mux(
-        req_get && dirResult.hit && meta(side).state === TRUNK, // TODO:
+        !state.s_gprobe, // TODO:
         toB,
         toN
       )
@@ -448,6 +449,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
   }
   when (io.tasks.source_b.fire) {
     state.s_pprobe := true.B
+    state.s_gprobe := true.B
     // TODO: Check correctness
     when (state.s_rprobe(0) === false.B) {
       state.s_rprobe(0) := true.B
@@ -672,23 +674,25 @@ class MSHR(implicit p: Parameters) extends L2Module {
   // for A miss, only when replResp do we finally choose a way, allowing nested C
   // for A-alias, always allowing nested C (state.w_replResp === true.B)
   // 是等待nest的
+  val hasNestwb = VecInit(false.B, false.B)
   for (i <- 0 until 2) {
-    val nestedwb_match = req_valid && meta(i).state =/= INVALID &&
+    hasNestwb(i) := req_valid && meta(i).state =/= INVALID &&
       // TODO: consider remove this
       sideCanNestC(i) &&
       dirResult.set === io.nestedwb.set &&
       dirResult.tag(i) === io.nestedwb.tag &&
       state.w_replResp
 
-    when (nestedwb_match) {
+    when (hasNestwb(i)) {
       when (io.nestedwb.c_set_dirty) {
         meta(i).dirty := true.B
       }
     }
     // let nested C write ReleaseData to the MSHRBuffer entry of this MSHR id
     // This is the VALID signal for releaseBuf.io.w(2)
-    io.nestedwbData(i) := nestedwb_match && io.nestedwb.c_set_dirty
+    io.nestedwbData(i) := hasNestwb(i) && io.nestedwb.c_set_dirty
   }
+  io.hasNestwb := hasNestwb.asUInt.orR
 
   dontTouch(state)
 

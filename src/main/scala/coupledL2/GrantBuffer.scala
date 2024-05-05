@@ -25,6 +25,7 @@ import freechips.rocketchip.tilelink._
 import freechips.rocketchip.tilelink.TLMessages._
 import coupledL2.prefetch.PrefetchResp
 import coupledL2.utils.{XSPerfAccumulate, XSPerfHistogram, XSPerfMax}
+import coupledL2.compress.CompressUnit
 
 // record info of those with Grant sent, yet GrantAck not received
 // used to block Probe upwards
@@ -353,4 +354,15 @@ class GrantBuffer(implicit p: Parameters) extends L2Module {
     // which can SERIOUSLY affect performance, should consider less drastic prefetch policy
     XSPerfAccumulate(cacheParams, "WARNING_pftRespQueue_about_to_full", noSpaceForMSHRPft.getOrElse(false.B))
   }
+
+  val compressor = Module(new CompressUnit)
+  compressor.io.in.valid := io.d.fire && Seq(GrantData, AccessAckData).map(_ === io.d.bits.opcode).reduce(_ || _)
+  compressor.io.in.bits := io.d.bits.data
+  compressor.io.out.ready := true.B
+  val compressible = compressor.io.out.valid && compressor.io.out.bits.compressible
+  val uncompressible = compressor.io.out.valid && !compressor.io.out.bits.compressible
+  val compressedLength = compressor.io.out.bits.length
+  XSPerfAccumulate(cacheParams, "DataToL1_Compressible", compressible)
+  XSPerfAccumulate(cacheParams, "DataToL1_Compressible", uncompressible)
+  XSPerfHistogram(cacheParams, "DataToL1_CompressLength", compressedLength, compressor.io.out.valid, 48, 560, 4)
 }

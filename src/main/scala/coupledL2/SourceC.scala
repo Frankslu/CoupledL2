@@ -19,10 +19,11 @@ package coupledL2
 
 import chisel3._
 import chisel3.util._
+import coupledL2.compress.CompressUnit
 import utility._
 import org.chipsalliance.cde.config.Parameters
 import freechips.rocketchip.tilelink._
-import coupledL2.utils.XSPerfAccumulate
+import coupledL2.utils.{XSPerfAccumulate, XSPerfHistogram}
 import huancun.DirtyKey
 
 //class SourceC(implicit p: Parameters) extends L2Module {
@@ -220,4 +221,16 @@ class SourceC(implicit p: Parameters) extends L2Module {
   io.resp.set := parseFullAddress(io.out.bits.address)._2
   io.resp.tag := parseFullAddress(io.out.bits.address)._1
   io.resp.respInfo := 0.U.asTypeOf(new RespInfoBundle)
+
+  val compressor = Module(new CompressUnit)
+  import freechips.rocketchip.tilelink.TLMessages.{ReleaseData, ProbeAckData}
+  compressor.io.in.valid := io.out.fire && Seq(ReleaseData, ProbeAckData).map(_ === io.out.bits.opcode).reduce(_ || _)
+  compressor.io.in.bits := io.out.bits.data
+  compressor.io.out.ready := true.B
+  val compressible = compressor.io.out.valid && compressor.io.out.bits.compressible
+  val uncompressible = compressor.io.out.valid && !compressor.io.out.bits.compressible
+  val compressedLength = compressor.io.out.bits.length
+  XSPerfAccumulate(cacheParams, "ReleaseData_Compressible", compressible)
+  XSPerfAccumulate(cacheParams, "ReleaseData_Compressible", uncompressible)
+  XSPerfHistogram(cacheParams, "ReleaseData_CompressLength", compressedLength, compressor.io.out.valid, 48, 560, 4)
 }

@@ -9,6 +9,7 @@ class CompressUnit(implicit p: Parameters) extends L2Module{
   class DataOut extends Bundle {
     val data = UInt((beatBytes * 8).W)
     val compressible = Bool()
+    val length = UInt((log2Ceil(blockBytes * 8) + 2).W)
   }
 
   val io = IO(new Bundle() {
@@ -106,9 +107,10 @@ class CompressUnit(implicit p: Parameters) extends L2Module{
 
   io.out.bits.data := Cat(compressedData, prefix)
   io.out.bits.compressible := compressible
+  io.out.bits.length := s1_totalWidth + ccPrefixBits.U
   io.out.valid := s1_valid
 }
 
 object CompressUnit {
-  val latency = 2
+  val latency = 0
 }

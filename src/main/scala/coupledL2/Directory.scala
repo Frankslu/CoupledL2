@@ -44,8 +44,7 @@ class MetaEntry(implicit p: Parameters) extends L2Bundle {
   }
 }
 
-object
-MetaEntry {
+object MetaEntry {
   def apply()(implicit p: Parameters) = {
     val init = WireInit(0.U.asTypeOf(new MetaEntry))
     init
@@ -152,12 +151,15 @@ class Directory(implicit p: Parameters) extends L2Module {
     )
     (cc_has_invalid_way | uc_has_invalid_way, ccWay, uc_has_invalid_way, ucWay)
   }
+  def l(way: UInt) = Cat("b0".U, way(wayBits - 1, 0))
+  def r(way: UInt) = Cat("b1".U, way(wayBits - 1, 0))
 
   val sets = cacheParams.sets
   val ways = cacheParams.ways
 
   val tagWen  = io.tagWReq.map(_.valid)
   val metaWen = io.metaWReq.map(_.valid)
+  val compressible = io.fromMainPipe_s3.wdataCompressible
   val replacerWen = WireInit(false.B)
 
   val tagArray  = Seq.fill(2)(Module(new SRAMTemplate(UInt(tagBits.W), sets, ways, singlePort = true)))
@@ -231,18 +233,16 @@ class Directory(implicit p: Parameters) extends L2Module {
     PriorityEncoder(req_s3.wayMask)
   )(wayBits, 0)
   val ucFinalWay = Mux(
-    doubleWayMask(Cat("b0".U, chosenUcWay)) && doubleWayMask(Cat("b1".U, chosenUcWay)),
+    doubleWayMask(l(chosenUcWay)) || doubleWayMask(r(chosenUcWay)),
     chosenUcWay,
     PriorityEncoder(req_s3.wayMask)
   )(wayBits - 1, 0)
-  val finalWay = Mux(io.fromMainPipe_s3.wdataCompressible, ccFinalWay, ucFinalWay)
+  val finalWay = Mux(compressible, ccFinalWay, ucFinalWay)
 
   val hit_s3 = Cat(hitVec).orR
 //  val ccMeta_s3 = metaAll_s3(hitWay)
   val way_s3 = Mux(hit_s3, hitWay, finalWay)
-
-  def l(way: UInt) = Cat("b0".U, way(wayBits - 1, 0))
-  def r(way: UInt) = Cat("b1".U, way(wayBits - 1, 0))
+  val hitSide = way_s3(wayBits)
 
   val meta_s3 = VecInit(metaAll_s3(l(way_s3)), metaAll_s3(r(way_s3)))
   val tag_s3 = VecInit(tagAll_s3(l(way_s3)), tagAll_s3(r(way_s3)))
@@ -341,7 +341,7 @@ class Directory(implicit p: Parameters) extends L2Module {
     "b01".U,
     Cat(Seq.tabulate(2)(i => replMeta(i).state =/= INVALID).reverse)
   )
-  val releaseTask = Mux(io.fromMainPipe_s3.wdataCompressible, ccReleaseTask, ucReleaseTask)
+  val releaseTask = Mux(compressible, ccReleaseTask, ucReleaseTask)
   io.replResp.bits.releaseTask := releaseTask
 
   /* ====== Update ====== */
@@ -353,11 +353,16 @@ class Directory(implicit p: Parameters) extends L2Module {
 
   // !!![TODO]!!! check this @CLS
   // hit-Promotion, miss-Insertion for RRIP, so refill should hit = false.B
-  val touch_way_s3 = Mux(refillReqValid_s3, replaceWay, way_s3)
+  val touch_way1_s3 = Mux(refillReqValid_s3,
+    Mux(compressible, finalWay, l(finalWay)),
+    Mux(meta_s3(hitSide).compressed, way_s3, l(way_s3)))
+  val touch_way2_s3 = Mux(refillReqValid_s3,
+    Mux(compressible, finalWay, r(finalWay)),
+    Mux(meta_s3(hitSide).compressed, way_s3, r(way_s3)))
   val rrip_hit_s3 = Mux(refillReqValid_s3, false.B, hit_s3)
 
   if(cacheParams.replacement == "srrip"){
-    val next_state_s3 = repl.get_next_state(repl_state_s3, touch_way_s3, rrip_hit_s3)
+    val next_state_s3 = repl.get_next_state(repl_state_s3, touch_way1_s3, rrip_hit_s3)
     val repl_init = Wire(Vec(ways, UInt(2.W)))
     repl_init.foreach(_ := 2.U(2.W))
     replacer_sram_opt.get.io.w(
@@ -383,7 +388,7 @@ class Directory(implicit p: Parameters) extends L2Module {
     repl_type := Mux(set_s3(6,0)===0.U, false.B,
       Mux(set_s3(6,0)===64.U, true.B,
         Mux(PSEL(9)===0.U, false.B, true.B)))    // false.B - srrip, true.B - brrip
-    val next_state_s3 = repl.get_next_state(repl_state_s3, touch_way_s3, rrip_hit_s3, repl_type)
+    val next_state_s3 = repl.get_next_state(repl_state_s3, touch_way1_s3, rrip_hit_s3, repl_type)
 
     val repl_init = Wire(Vec(ways, UInt(2.W)))
     repl_init.foreach(_ := 2.U(2.W))
@@ -394,10 +399,11 @@ class Directory(implicit p: Parameters) extends L2Module {
       1.U
     )
   } else {
-    val next_state_s3 = repl.get_next_state(repl_state_s3, touch_way_s3)
+    val next_state1_s3 = repl.get_next_state(repl_state_s3, touch_way1_s3)
+    val next_state2_s3 = repl.get_next_state(next_state1_s3, touch_way2_s3)
     replacer_sram_opt.get.io.w(
       !resetFinish || replacerWen,
-      Mux(resetFinish, next_state_s3, 0.U),
+      Mux(resetFinish, next_state2_s3, 0.U),
       Mux(resetFinish, set_s3, resetIdx),
       1.U
     )
@@ -412,5 +418,7 @@ class Directory(implicit p: Parameters) extends L2Module {
   }
 
   XSPerfAccumulate(cacheParams, "dirRead_cnt", io.read.fire)
-  XSPerfAccumulate(cacheParams, "choose_busy_way", reqValid_s3 && !doubleWayMask(chosenCcWay))
+  XSPerfAccumulate(cacheParams, "choose_busy_way", reqValid_s3 && !Mux(compressible, doubleWayMask(chosenCcWay),
+    doubleWayMask(l(chosenUcWay)) | doubleWayMask(r(chosenUcWay))
+  ))
 }

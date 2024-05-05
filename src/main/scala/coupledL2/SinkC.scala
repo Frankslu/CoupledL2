@@ -29,9 +29,6 @@ class PipeBufferResp(implicit p: Parameters) extends L2Bundle {
   val data = Vec(beatSize, UInt((beatBytes * 8).W))
 }
 
-class BlockEntry(implicit p: Parameters) extends L2Bundle {
-
-}
 // SinkC receives upwards Release or ProbeAck:
 // (1) For Release/ReleaseData, send it to RequestArb directly
 // (2) For ProbeAck/ProbeAckData, wakeup w_probeack in MSHR
@@ -137,12 +134,12 @@ class SinkC(implicit p: Parameters) extends L2Module {
       Seq.tabulate(2)(i => s.bits.metaTag(i) === taskArb.io.out.bits.tag && s.bits.sideCannotNestC(i) && s.bits.sideValidMask(i)).reduce(_ || _)
   ))).asUInt
   val releaseNeedBlock = taskArb.io.out.bits.opcode === ReleaseData && newdataMask.orR
-  taskArb.io.out.ready := io.task.ready && !releaseNeedBlock
+  taskArb.io.out.ready := io.task.ready
   taskArb.io.in.zipWithIndex.foreach {
     case (in, i) =>
       in.valid := taskValids(i)
       in.bits := taskBuf(i)
-      when (in.fire) {
+      when (in.fire && !releaseNeedBlock) {
         taskValids(i) := false.B
       }
   }
@@ -150,7 +147,6 @@ class SinkC(implicit p: Parameters) extends L2Module {
   val cValid = io.c.valid && isRelease && last
   io.task.valid := taskArb.io.out.valid && !releaseNeedBlock
   io.task.bits := taskArb.io.out.bits
-  io.task.bits.bufIdx := taskArb.io.out.bits.bufIdx
 
   io.resp.valid := io.c.valid && (first || last) && !isRelease
   io.resp.mshrId := 0.U // DontCare
@@ -174,7 +170,7 @@ class SinkC(implicit p: Parameters) extends L2Module {
 
   io.bufResp.data := RegNext(RegEnable(dataBuf(io.task.bits.bufIdx), io.task.fire))
   when(RegNext(io.task.fire)) {
-    beatValids(io.task.bits.bufIdx).foreach(_ := false.B)
+    beatValids(RegNext(io.task.bits.bufIdx)).foreach(_ := false.B)
   }
 
   // Performance counters

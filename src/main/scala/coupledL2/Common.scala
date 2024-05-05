@@ -216,6 +216,7 @@ class FSMState(implicit p: Parameters) extends L2Bundle {
   val s_acquire = Bool()  // acquire downwards
   val s_rprobe = Vec(2, Bool())   // probe upwards, caused by replace
   val s_pprobe = Bool()   // probe upwards, casued by probe
+  val s_gprobe = Bool()   // probe caused by get, only to set probe param to ToB
   val s_release = Vec(2, Bool())  // release downwards
   val s_probeack = Bool() // respond probeack downwards
   val s_refill = Bool()   // respond grant upwards
