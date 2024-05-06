@@ -3,34 +3,34 @@ init:
 	cd rocket-chip && git submodule update --init hardfloat cde
 
 compile:
-	mill -i CoupledL2.compile
+	mill -j 8 -i CoupledL2.compile
 
 test-top-l2:
-	mill -i CoupledL2.test.runMain coupledL2.TestTop_L2 -td build
+	mill -j 8 -i CoupledL2.test.runMain coupledL2.TestTop_L2 -td build
 
 test-top-l2standalone:
-	mill -i CoupledL2.test.runMain coupledL2.TestTop_L2_Standalone -td build
+	mill -j 8 -i CoupledL2.test.runMain coupledL2.TestTop_L2_Standalone -td build
 
 test-top-l2l3:
-	mill -i CoupledL2.test.runMain coupledL2.TestTop_L2L3 -td build
+	mill -j 8 -i CoupledL2.test.runMain coupledL2.TestTop_L2L3 -td build
 
 test-top-l2l3l2:
-	mill -i CoupledL2.test.runMain coupledL2.TestTop_L2L3L2 -td build
+	mill -j 8 -i CoupledL2.test.runMain coupledL2.TestTop_L2L3L2 -td build
 
 test-top-fullsys:
-	mill -i CoupledL2.test.runMain coupledL2.TestTop_fullSys -td build
+	mill -j 8 -i CoupledL2.test.runMain coupledL2.TestTop_fullSys -td build
 
 clean:
 	rm -rf ./build
 
 bsp:
-	mill -i mill.bsp.BSP/install
+	mill -j 8 -i mill.bsp.BSP/install
 
 idea:
-	mill -i mill.scalalib.GenIdea/idea
+	mill -j 8 -i mill.scalalib.GenIdea/idea
 
 reformat:
-	mill -i __.reformat
+	mill -j 8 -i __.reformat
 
 checkformat:
-	mill -i __.checkFormat
+	mill -j 8 -i __.checkFormat
