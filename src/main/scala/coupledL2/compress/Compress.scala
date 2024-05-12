@@ -5,10 +5,11 @@ import chisel3.util._
 import org.chipsalliance.cde.config.Parameters
 import coupledL2._
 
-class CompressUnit(implicit p: Parameters) extends L2Module with CCParameters {
+class CompressUnit(implicit p: Parameters) extends L2Module{
   class DataOut extends Bundle {
     val data = UInt((beatBytes * 8).W)
     val compressible = Bool()
+    val length = UInt((log2Ceil(blockBytes * 8) + 2).W)
   }
 
   val io = IO(new Bundle() {
@@ -59,7 +60,7 @@ class CompressUnit(implicit p: Parameters) extends L2Module with CCParameters {
       patternSeq.zipWithIndex.map { case (pat, i) => prefixOH(i) -> pat.width.U }
     )
   )
-  val entryOffset = Seq.fill(entry_num)(Wire(UInt(CC_offsetWidth.W)))
+  val entryOffset = Wire(Vec(entry_num, UInt(CC_offsetWidth.W)))
   val totalWidth = entryWidth.zip(entryOffset).foldLeft(0.U(CC_offsetWidth.W)) {
     case (sum, (width, offset)) =>
       offset := sum
@@ -79,7 +80,7 @@ class CompressUnit(implicit p: Parameters) extends L2Module with CCParameters {
   // val s1_totalWidth = RegEnable(totalWidth, io.in.fire)
   val s1_prefixOH = prefixOH
   val s1_compressedEntry = compressedEntry
-  val s1_entryOffset = VecInit(entryOffset)
+  val s1_entryOffset = entryOffset
   val s1_totalWidth = totalWidth
 
   // stage 2
@@ -106,9 +107,10 @@ class CompressUnit(implicit p: Parameters) extends L2Module with CCParameters {
 
   io.out.bits.data := Cat(compressedData, prefix)
   io.out.bits.compressible := compressible
+  io.out.bits.length := s1_totalWidth + ccPrefixBits.U
   io.out.valid := s1_valid
 }
 
 object CompressUnit {
-  val latency = 2
+  val latency = 0
 }

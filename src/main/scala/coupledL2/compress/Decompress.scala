@@ -6,7 +6,7 @@ import org.chipsalliance.cde.config.Parameters
 import utility.RegNextN
 import coupledL2._
 
-class DecompressUnit(implicit p: Parameters) extends L2Module with CCParameters {
+class DecompressUnit(implicit p: Parameters) extends L2Module{
   val io = IO(new Bundle() {
     val in = Flipped(DecoupledIO(UInt((beatBytes * 8).W)))
     val out = DecoupledIO(UInt((blockBytes * 8).W))

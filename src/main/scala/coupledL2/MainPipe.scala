@@ -40,8 +40,7 @@ class MainPipeInfo(implicit p: Parameters) extends L2Bundle {
   val mshrId = UInt(mshrBits.W)
 }
 
-// MSHR Grant任务会根据目录读取情况、写入数据的压缩情况，决定后续的操作(包括release任务的分配、)
-class MainPipe(implicit p: Parameters) extends L2Module with CCParameters{
+class MainPipe(implicit p: Parameters) extends L2Module{
   val io = IO(new Bundle() {
     /* receive task from arbiter at stage 2 */
     val taskFromArb_s2 = Flipped(ValidIO(new TaskBundle()))
@@ -79,6 +78,7 @@ class MainPipe(implicit p: Parameters) extends L2Module with CCParameters{
 
     val fromMSHRCtl = new Bundle() {
       val mshr_alloc_ptr = Input(UInt(mshrBits.W))
+      val nestCData = Input(Bool())
       val nestC = Input(Bool())
     }
 
@@ -160,7 +160,8 @@ class MainPipe(implicit p: Parameters) extends L2Module with CCParameters{
   val replMeta_s3     = replResp_s3.meta
   val req_s3          = task_s3.bits
   val hitSide_s3      = dirResult_s3.way(wayBits)
-  val replRespSide_s3 = replResp_s3.way(wayBits)
+  // 要写入的一边
+  val missRefillSide_s3 = replResp_s3.way(wayBits)
   val mshrHitSide_s3     = req_s3.way(wayBits)
 
   val mshr_req_s3     = req_s3.mshrTask
@@ -194,13 +195,14 @@ class MainPipe(implicit p: Parameters) extends L2Module with CCParameters{
                               hitMeta_s3(i).alias.getOrElse(0.U) =/= req_s3.alias.getOrElse(0.U)))
 
   val mshr_refill_s3 = (mshr_accessackdata_s3 || mshr_hintack_s3 || mshr_grant_s3) // needs refill to L2 DS
-  val missRefillNeedReplSide = VecInit(Seq.tabulate(ccRate)(i => io.replResp.valid && req_s3.replTask &&
+  // 要被替换的边
+  val missRefillEvictSide = VecInit(Seq.tabulate(ccRate)(i => io.replResp.valid && req_s3.replTask &&
     Mux(wdataCompressible,
-      replRespSide_s3 === i.U && replResp_s3.meta(i).state =/= INVALID,
-      replResp_s3.meta(i).state =/= INVALID
+      missRefillSide_s3 === i.U && replMeta_s3(i).state =/= INVALID,
+      replMeta_s3(i).state =/= INVALID
     ))).asUInt
-  val miss_refill_need_repl = io.replResp.valid && refill_for_miss && missRefillNeedReplSide.orR
-  dontTouch(cache_alias); dontTouch(mshr_refill_s3); dontTouch(missRefillNeedReplSide); dontTouch(miss_refill_need_repl)
+  val miss_refill_need_repl = io.replResp.valid && refill_for_miss && missRefillEvictSide.orR
+  dontTouch(cache_alias); dontTouch(mshr_refill_s3); dontTouch(missRefillEvictSide); dontTouch(miss_refill_need_repl)
 
   /* ======== Interact with MSHR ======== */
   val acquire_on_miss_s3  = req_acquire_s3 || req_prefetch_s3 || req_get_s3 // TODO: remove this cause always acquire on miss?
@@ -334,7 +336,7 @@ class MainPipe(implicit p: Parameters) extends L2Module with CCParameters{
   compressor.io.out.ready := DontCare
   wdataCompressible := compressor.io.out.bits.compressible
   val ccData = compressor.io.out.bits.data
-  val retry = replResp_s3.retry
+  val retry = replResp_s3.retry && io.replResp.valid
   dontTouch(retry)
   // if release data can't compress and the cacheline stores two compressed line, then the other valid line need to be released
   val release_need_release = !wdataCompressible && hitMeta_s3(hitSide_s3).compressed === true.B &&
@@ -353,24 +355,24 @@ class MainPipe(implicit p: Parameters) extends L2Module with CCParameters{
   val hasData_s3 = source_req_s3.opcode(0)
   dontTouch(hasData_s3)
 
-  val need_data_a  = dirResult_s3.hit && (req_get_s3 || req_acquireBlock_s3)
+  val need_data_a  = dirResult_s3.hit && (req_get_s3 || req_acquireBlock_s3 || cache_alias(hitSide_s3))
   val need_data_b  = sinkB_req_s3 && dirResult_s3.hit &&
     (hitMeta_s3(hitSide_s3).state === TRUNK || hitMeta_s3(hitSide_s3).state === TIP && hitMeta_s3(hitSide_s3).dirty || req_s3.needProbeAckData)
   val need_data_c  = sinkC_req_s3 && isParamFromT(req_s3.param) && req_s3.opcode(0) && dirResult_s3.hit && release_need_release
   val need_data_missRefill = mshr_refill_s3 && refill_for_miss && miss_refill_need_repl && !retry
   val need_data_hitRefill = mshr_refill_s3 && !refill_for_miss && req_s3.useProbeData && hitRefill_need_repl // TODO:
   val need_data_mshr_pback = mshr_probeack_s3 && probeAck_need_repl && req_s3.dsWen // TODO:
-  val ren                 = need_data_a || need_data_b || need_data_c && !io.fromMSHRCtl.nestC ||
+  val ren                 = need_data_a || need_data_b || need_data_c && !io.fromMSHRCtl.nestCData ||
     need_data_hitRefill || need_data_missRefill || need_data_mshr_pback
   dontTouch(need_data_a); dontTouch(need_data_b); dontTouch(need_data_c)
   dontTouch(need_data_missRefill); dontTouch(need_data_hitRefill); dontTouch(need_data_mshr_pback); dontTouch(ren)
 
   val wen_c = sinkC_req_s3 && isParamFromT(req_s3.param) && req_s3.opcode(0) && dirResult_s3.hit && !release_need_release; dontTouch(wen_c)
-  val wen_probeAck = mshr_probeack_s3 && !probeAck_need_repl; dontTouch(wen_probeAck)
+  val wen_probeAck = mshr_probeack_s3 && !probeAck_need_repl && req_s3.dsWen; dontTouch(wen_probeAck)
   val wen_refill = mshr_refill_s3 && !miss_refill_need_repl && !hitRefill_need_repl && !retry; dontTouch(wen_refill)
   val wen_rrelease = mshr_release_s3; dontTouch(wen_rrelease)
   val wen_mshr = req_s3.dsWen && (wen_probeAck || wen_rrelease || wen_refill); dontTouch(wen_mshr)
-  val wen   = wen_c && !io.fromMSHRCtl.nestC || wen_mshr; dontTouch(wen)
+  val wen   = wen_c && !io.fromMSHRCtl.nestCData || wen_mshr; dontTouch(wen)
   // TODO: Mux
   val wmask = ParallelPriorityMux(Seq(
     !wdataCompressible -> "b11".U,
@@ -382,7 +384,7 @@ class MainPipe(implicit p: Parameters) extends L2Module with CCParameters{
     sinkC_req_s3 -> UIntToOH(hitSide_s3, 2),
     true.B -> 0.U
   )); dontTouch(wen)
-  need_mshr_s3_c := need_data_c && !io.fromMSHRCtl.nestC; dontTouch(need_mshr_s3_c)
+  need_mshr_s3_c := need_data_c && !io.fromMSHRCtl.nestCData; dontTouch(need_mshr_s3_c)
 
   // Acquire,Get,Probe hit: data is read to source request
   // Release, Grant, ProbeAck: read the line which need to replace to ReleaseBuf
@@ -398,7 +400,7 @@ class MainPipe(implicit p: Parameters) extends L2Module with CCParameters{
     // release请求读取时一定命中，但可能要读取另一个压缩块
     sinkC_req_s3 -> UIntToOH(!hitSide_s3, 2),
     // probeAck 会读取需要替换的块，也就是命中块相反的块
-    (mshr_refill_s3 && refill_for_miss) -> missRefillNeedReplSide,
+    (mshr_refill_s3 && refill_for_miss) -> missRefillEvictSide,
     mshr_req_s3 -> UIntToOH(!req_s3.way(wayBits), 2),
     true.B -> 0.U
   )); dontTouch(rmask)
@@ -410,12 +412,12 @@ class MainPipe(implicit p: Parameters) extends L2Module with CCParameters{
   io.toDS.req_s3.bits.wen := wen
   io.toDS.wdata_s3.data := Mux(wdataCompressible, Fill(2, ccData), DSwdata)
   io.toDS.req_s3.bits.wmask := wmask
-  io.toDS.req_s3.bits.rdataCompressible := PriorityMux(Seq(
+  io.toDS.req_s3.bits.compressible := PriorityMux(Seq(
     (sinkA_req_s3 || sinkB_req_s3) -> hitMeta_s3(hitSide_s3).compressed,
     sinkC_req_s3 -> true.B, // if c request need to read ds, the ds data must be compressed
     //if one side is uncompressed, then another side also uncompressed; else another is invalid or comrpessed
-    (mshr_refill_s3 && refill_for_miss) -> replResp_s3.meta(replRespSide_s3).compressed,
-    mshr_req_s3 -> true.B // if hit-refill, pback need to read ds, there must be two compressed line in ds
+    (mshr_refill_s3 && refill_for_miss) -> replResp_s3.meta(!missRefillEvictSide(0)).compressed,
+    mshr_req_s3 -> true.B // if hit-refill or pback need to read ds, there must be two compressed line in ds
   ))
 
   /* ======== Read DS and store data in Buffer ======== */
@@ -438,9 +440,9 @@ class MainPipe(implicit p: Parameters) extends L2Module with CCParameters{
   val metaW_valid_s3_b    = sinkB_req_s3 && !need_mshr_s3_b && dirResult_s3.hit &&
     (hitMeta_s3(hitSide_s3).state === TIP || hitMeta_s3(hitSide_s3).state === BRANCH && req_s3.param === toN)
   val metaW_valid_s3_c    = sinkC_req_s3 && dirResult_s3.hit
-  val metaW_valid_s3_mshrRefill = mshr_req_s3 && req_s3.metaWen && mshr_refill_s3 && !retry
+  val metaW_valid_s3_mshrRefill = mshr_req_s3 && req_s3.metaWen && mshr_refill_s3 && !(retry && refill_for_miss)
   val metaW_valid_s3_mshrProbeAck = mshr_req_s3 && req_s3.metaWen && mshr_probeack_s3
-  val metaW_valid_s3_mshr = mshr_req_s3 && req_s3.metaWen && !(mshr_refill_s3 && retry)
+  val metaW_valid_s3_mshr = mshr_req_s3 && req_s3.metaWen && !(mshr_refill_s3 && retry && refill_for_miss)
   require(clientBits == 1)
 
   // Get and Prefetch should not change alias bit
@@ -476,27 +478,34 @@ class MainPipe(implicit p: Parameters) extends L2Module with CCParameters{
     clients = Fill(clientBits, !isToN(req_s3.param)),
     alias = hitMeta_s3(hitSide_s3).alias,
     accessed = hitMeta_s3(hitSide_s3).accessed,
-    compressed = wdataCompressible
+    compressed = Mux(sinkC_req_s3 && isParamFromT(req_s3.param) && req_s3.opcode(0) && dirResult_s3.hit,
+      wdataCompressible,
+      hitMeta_s3(hitSide_s3).compressed
+    )
   )
   // use merge_meta if mergeA
   val metaW_s3_mshr = WireInit(0.U.asTypeOf(new MetaEntry))
   metaW_s3_mshr := Mux(req_s3.mergeA, req_s3.aMergeTask.meta, req_s3.meta)
+  val metaW_mshr_compressed = Wire(Bool())
   when (req_s3.dsWen && mshr_req_s3) {
-    metaW_s3_mshr.compressed := wdataCompressible
+    metaW_mshr_compressed := wdataCompressible
   }.otherwise {
-    metaW_s3_mshr.compressed := Mux(req_s3.mergeA, req_s3.aMergeTask.meta, req_s3.meta).compressed
+    metaW_mshr_compressed := Mux(req_s3.mergeA, req_s3.aMergeTask.meta, req_s3.meta).compressed
   }
+  metaW_s3_mshr.compressed := metaW_mshr_compressed
 
   // if a uncompressible line recovered by a compressible line, the rest meta need to be invalid
   // 需要看写入块中原数据块的情况;需要是有效的，且未压缩
   val uncompress2compress = wdataCompressible &&
     PriorityMux(Seq(
       // release可以直接写入，不需要release_need_release
-      wen_c -> !hitMeta_s3(hitSide_s3).compressed,
+      (sinkC_req_s3 && isParamFromT(req_s3.param) && req_s3.opcode(0) && dirResult_s3.hit) -> !hitMeta_s3(hitSide_s3).compressed,
       // mshr refill
-      (need_data_hitRefill || need_data_mshr_pback)
+      (mshr_refill_s3 && !refill_for_miss || mshr_probeack_s3)
         -> !req_s3.metaVec(mshrHitSide_s3).compressed,
-      need_data_missRefill -> !replResp_s3.meta(replRespSide_s3).compressed,
+      (mshr_refill_s3 && refill_for_miss) -> // 只有miss refill需要关心选中的边是否有效，因为其他情况下都是命中的，必定有效
+        (!replMeta_s3(!missRefillEvictSide(0)).compressed && replMeta_s3(!missRefillEvictSide(0)).state =/=
+          INVALID),
       true.B -> false.B
     ))
 
@@ -508,17 +517,18 @@ class MainPipe(implicit p: Parameters) extends L2Module with CCParameters{
     //
     val metaSideWen = MuxCase(false.B, Seq(
       (metaW_valid_s3_a || metaW_valid_s3_b) -> Mux(hitMeta_s3(hitSide_s3).compressed, hitSide_s3 === i.U, true.B),
-      metaW_valid_s3_c -> Mux(wdataCompressible, hitSide_s3 === i.U, true.B),
+      metaW_valid_s3_c -> Mux(metaW_s3_c.compressed, hitSide_s3 === i.U, true.B),
       (metaW_valid_s3_mshrRefill && refill_for_miss) ->
-        Mux(wdataCompressible, replRespSide_s3 === i.U, true.B),
+        Mux(metaW_mshr_compressed, missRefillSide_s3 === i.U, true.B),
       (metaW_valid_s3_mshrRefill && !refill_for_miss || metaW_valid_s3_mshrProbeAck) ->
-        Mux(wdataCompressible, mshrHitSide_s3 === i.U, true.B)
+        Mux(metaW_mshr_compressed, mshrHitSide_s3 === i.U, true.B)
     ))
-    val entryShouldInvalid = uncompress2compress && req_s3.dsWen &&
+    val entryShouldInvalid = uncompress2compress && (req_s3.dsWen || wen_c || need_data_c) &&
       ParallelPriorityMux(Seq(
-        wen_c -> !(hitSide_s3 === i.U),
-        need_data_missRefill -> !(replRespSide_s3 === i.U),
-        (need_data_hitRefill || need_data_mshr_pback) -> !(mshrHitSide_s3 === i.U)
+        (wen_c || need_data_c) -> !(hitSide_s3 === i.U),
+        (mshr_refill_s3 && refill_for_miss && !retry) -> !(missRefillSide_s3 === i.U),
+        (mshr_refill_s3 && !refill_for_miss || mshr_probeack_s3) -> !(mshrHitSide_s3 === i.U),
+        true.B -> false.B
       ))
     io.metaWReq(i).valid      := !resetFinish || task_s3.valid && (metaSideWen || entryShouldInvalid)
     io.metaWReq(i).bits.set   := Mux(resetFinish, req_s3.set, resetIdx)
@@ -533,9 +543,9 @@ class MainPipe(implicit p: Parameters) extends L2Module with CCParameters{
     )
 
     val tagSideWen = MuxCase(false.B, Seq(
-      (sinkC_req_s3 && (wen_c || need_data_c)) -> Mux(wdataCompressible, hitSide_s3 === i.U, true.B),
+      (wen_c || need_data_c) -> Mux(wdataCompressible, hitSide_s3 === i.U, true.B),
       ((mshr_refill_s3 && !refill_for_miss || mshr_probeack_s3) && req_s3.tagWen) -> Mux(wdataCompressible, mshrHitSide_s3 === i.U, true.B),
-      (mshr_refill_s3 && refill_for_miss && !retry && req_s3.tagWen) -> Mux(wdataCompressible, replRespSide_s3 === i.U, true.B)
+      (mshr_refill_s3 && refill_for_miss && !retry && req_s3.tagWen) -> Mux(wdataCompressible, missRefillSide_s3 === i.U, true.B)
     ))
     io.tagWReq(i).valid     := task_s3.valid && tagSideWen
     io.tagWReq(i).bits.set  := req_s3.set
@@ -656,7 +666,7 @@ class MainPipe(implicit p: Parameters) extends L2Module with CCParameters{
   val pendingC_s4 = task_s4.bits.fromB && !task_s4.bits.mshrTask && task_s4.bits.opcode === ProbeAckData
   val pendingD_s4 = task_s4.bits.fromA && !task_s4.bits.mshrTask &&
     (task_s4.bits.opcode === GrantData || task_s4.bits.opcode === AccessAckData)
-  val rmask_s5 = RegInit(0.U.asTypeOf(rmask_s4))
+  val rmask_s5 = RegInit(0.U.asTypeOf(rmask))
 
   task_s5.valid := task_s4.valid && !req_drop_s4
   when (task_s4.valid && !req_drop_s4) {
@@ -792,6 +802,9 @@ class MainPipe(implicit p: Parameters) extends L2Module with CCParameters{
       alloc_state.w_rprobeackfirst(hitSide_s3) := false.B
       alloc_state.w_rprobeacklast(hitSide_s3) := false.B
     }
+    when(need_probe_s3_a) {
+      alloc_state.s_gprobe := false.B
+    }
     // need trigger a prefetch, send PrefetchTrain msg to Prefetcher
     // prefetchOpt.foreach {_ =>
     //   when (req_s3.fromA && req_s3.needHint.getOrElse(false.B) && (!dirResult_s3.hit || meta_s3.prefetch.get)) {
@@ -819,7 +832,7 @@ class MainPipe(implicit p: Parameters) extends L2Module with CCParameters{
     }
   }
   // io.toMSHRCtl.mainPipeInfo_s3.valid := (need_data_mshr_pback || need_data_hitRefill) && req_s3.dsWen
-  io.toMSHRCtl.mainPipeInfo_s3.valid := mshr_probeack_s3 || mshr_refill_s3 && !refill_for_miss
+  io.toMSHRCtl.mainPipeInfo_s3.valid := (mshr_probeack_s3 || mshr_refill_s3 && !refill_for_miss) && task_s3.valid
   // 所有需要驱逐同行块的mshr task，本身都要写DS
   io.toMSHRCtl.mainPipeInfo_s3.bits.wdataCompressible := wdataCompressible
   io.toMSHRCtl.mainPipeInfo_s3.bits.probeNeedRelease := need_data_mshr_pback
@@ -905,6 +918,37 @@ class MainPipe(implicit p: Parameters) extends L2Module with CCParameters{
 
   XSPerfAccumulate(cacheParams, "early_prefetch", hitMeta_s3(hitSide_s3).prefetch.getOrElse(false.B) && !hitMeta_s3(hitSide_s3).accessed && !dirResult_s3.hit && task_s3.valid)
 
+  // compression
+  val req_write_ds = wen_c || need_data_c ||
+    mshr_refill_s3 && req_s3.dsWen ||
+    mshr_probeack_s3 && req_s3.dsWen
+  val compressed_len = compressor.io.out.bits.length
+  XSPerfAccumulate(cacheParams, "wdata_compressible", compressor.io.out.bits.compressible && req_write_ds)
+  XSPerfAccumulate(cacheParams, "wdata_uncompressible", !compressor.io.out.bits.compressible && req_write_ds)
+  XSPerfHistogram(cacheParams, "compressed_length", compressed_len, req_write_ds, 48, 560, 4)
+
+  class CompressInfo extends L2Bundle {
+    val sset = UInt(setBits.W)
+    val way = UInt((wayBits + 1).W)
+    val wdataCompressible = Bool()
+    val wdataLength = UInt((log2Ceil(blockBytes * 8) + 2).W)
+  }
+
+  if (cacheParams.enableMonitor && !cacheParams.FPGAPlatform) {
+    val hartId = if (cacheParams.hartIds.length == 1) cacheParams.hartIds.head else 0
+    val table = ChiselDB.createTable(s"L2CMP", new CompressInfo, basicDB = true)
+    val compressInfo = Wire(new CompressInfo)
+    compressInfo.sset := req_s3.set
+    compressInfo.way := ParallelPriorityMux(Seq(
+      (wen_c || need_data_c) -> dirResult_s3.way,
+      (mshr_refill_s3 && req_s3.dsWen) -> replResp_s3.way,
+      (mshr_probeack_s3 && req_s3.dsWen) -> req_s3.way
+    ))
+    compressInfo.wdataCompressible := compressor.io.out.bits.compressible
+    compressInfo.wdataLength := compressed_len
+
+    table.log(compressInfo, req_write_ds, s"L2${hartId}_${p(SliceIdKey)}", clock, reset)
+  }
   /* ===== Monitor ===== */
   io.toMonitor.task_s2 := task_s2
   io.toMonitor.task_s3 := task_s3
@@ -921,4 +965,5 @@ class MainPipe(implicit p: Parameters) extends L2Module with CCParameters{
     (mshr_refill_s3 && refill_for_miss) -> replResp_s3.way,
     mshr_req_s3 -> req_s3.way
   ))
+  io.toMonitor.nestC := io.fromMSHRCtl.nestC
 }

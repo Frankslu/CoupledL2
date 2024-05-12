@@ -27,6 +27,7 @@ import freechips.rocketchip.tilelink.TLPermissions._
 import org.chipsalliance.cde.config.Parameters
 import coupledL2.prefetch.{PfSource, PrefetchTrain}
 import coupledL2.utils.XSPerfAccumulate
+import utility.RegNextN
 
 class MSHRTasks(implicit p: Parameters) extends L2Bundle {
   // outer
@@ -54,6 +55,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
     val tasks = new MSHRTasks()
     val resps = new MSHRResps()
     val nestedwb = Input(new NestedWriteback)
+    val hasNestwb = Output(Bool())
     val nestedwbData = Output(Vec(2, Bool()))
     val aMergeTask = Flipped(ValidIO(new TaskBundle))
     val replResp = Flipped(ValidIO(new ReplacerResult))
@@ -64,7 +66,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
   val gotDirty = RegInit(false.B)
   val gotGrantData = RegInit(false.B)
   val probeDirty = RegInit(VecInit(false.B, false.B))
-  val probeGotN = RegInit(false.B)
+  val probeGotN = RegInit(VecInit(false.B, false.B))
 
   val timer = RegInit(0.U(64.W)) // for performance analysis
 
@@ -80,7 +82,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
   }
   val state     = RegInit(new FSMState(), initState)
 
-    when(io.alloc.valid) {
+  when(io.alloc.valid) {
     req_valid := true.B
     state     := io.alloc.bits.state
     dirResult := io.alloc.bits.dirResult
@@ -89,7 +91,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
     gotDirty    := false.B
     gotGrantData := false.B
     probeDirty  := VecInit(false.B, false.B)
-    probeGotN   := false.B
+    probeGotN   := VecInit(false.B, false.B)
     timer       := 1.U
   }
 
@@ -170,7 +172,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
       !state.s_pprobe,
       req.param,
       Mux(
-        req_get && dirResult.hit && meta(side).state === TRUNK, // TODO:
+        !state.s_gprobe, // TODO:
         toB,
         toN
       )
@@ -279,7 +281,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
           meta(hitSide).state
         )
       ),
-      clients = Fill(clientBits, !probeGotN),
+      clients = Fill(clientBits, !probeGotN(hitSide)),
       alias = meta(hitSide).alias, //[Alias] Keep alias bits unchanged
       prefetch = req.param =/= toN && meta_pft(hitSide),
       accessed = req.param =/= toN && meta(hitSide).accessed,
@@ -367,7 +369,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
       clients = Mux(
         req_prefetch,
         Mux(dirResult.hit, meta(hitSide).clients, Fill(clientBits, false.B)),
-        Fill(clientBits, !(req_get && (!dirResult.hit || meta_no_client(hitSide) || probeGotN)))
+        Fill(clientBits, !(req_get && (!dirResult.hit || meta_no_client(hitSide) || probeGotN(hitSide))))
       ),
       alias = Some(aliasFinal),
       prefetch = req_prefetch || dirResult.hit && meta_pft(hitSide),
@@ -447,6 +449,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
   }
   when (io.tasks.source_b.fire) {
     state.s_pprobe := true.B
+    state.s_gprobe := true.B
     // TODO: Check correctness
     when (state.s_rprobe(0) === false.B) {
       state.s_rprobe(0) := true.B
@@ -495,7 +498,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
       probeDirty(c_resp_matchWay) := true.B
     }
     when (isToN(c_resp.bits.param)) {
-      probeGotN := true.B
+      probeGotN(c_resp_matchWay) := true.B
     }
   }
   for (i <- 0 until 2) {
@@ -570,7 +573,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
   
   when (io.mainPipeInfo.valid) {
     state.w_evictResp := true.B
-    when (mp_info.hitRefillNeedRelease || mp_info.probeNeedRelease){
+    when (mp_info.hitRefillNeedRelease || mp_info.probeNeedRelease) {
       state.s_release(!hitSide) := false.B
       state.w_releaseack(!hitSide) := false.B
       when (dirResult.meta(!hitSide).clients.orR) {
@@ -586,7 +589,8 @@ class MSHR(implicit p: Parameters) extends L2Module {
   }
 
   val no_schedule = state.s_refill && state.s_probeack && state.s_release.reduce(_ && _) // && state.s_triggerprefetch.getOrElse(true.B)
-  val no_wait = state.w_rprobeacklast.reduce(_ && _) && state.w_pprobeacklast && state.w_grantlast && state.w_releaseack.reduce(_ && _) && state.w_replResp && state.w_evictResp
+  val no_wait = state.w_rprobeacklast.reduce(_ && _) && state.w_pprobeacklast && state.w_grantlast &&
+    state.w_releaseack.reduce(_ && _) && state.w_replResp && state.w_evictResp
   val will_free = no_schedule && no_wait
   when (will_free && req_valid) {
     req_valid := false.B
@@ -620,7 +624,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
   // wait for resps, high as valid
   for (i <- 0 until 2) {
     val side_w_rpback = Mux(!state.w_rprobeacklast(0) && !dirResult.meta(0).compressed, true.B, !state.w_rprobeacklast(i))
-    val side_w_ppback = Mux((!state.w_pprobeacklast || !state.w_pprobeack) && !dirResult.meta(hitSide).compressed, true.B, hitSide === i.U)
+    val side_w_ppback = (!state.w_pprobeacklast || !state.w_pprobeack) && Mux(!dirResult.meta(hitSide).compressed, true.B, hitSide === i.U)
     io.status.bits.w_c_resp(i) :=  side_w_rpback || side_w_ppback
   }
   io.status.bits.w_d_resp := !state.w_grantlast || !state.w_grant || state.w_releaseack.reduce(!_ || !_)
@@ -634,7 +638,7 @@ class MSHR(implicit p: Parameters) extends L2Module {
   io.msInfo.bits.set := req.set
   io.msInfo.bits.way := dirResult.way
   io.msInfo.bits.reqTag := req.tag
-  io.msInfo.bits.needRelease := state.w_releaseack.reduce(!_ || !_)
+  io.msInfo.bits.needRelease := Cat(state.w_releaseack.map(!_).reverse)
   // if releaseTask is already in mainpipe_s1/s2, while a refillTask in mainpipe_s3, the refill should also be blocked and retry
   io.msInfo.bits.blockRefill := releaseNotSent || RegNext(releaseNotSent,false.B) || RegNext(RegNext(releaseNotSent,false.B),false.B)
   io.msInfo.bits.dirHit := dirResult.hit
@@ -647,11 +651,20 @@ class MSHR(implicit p: Parameters) extends L2Module {
   io.msInfo.bits.param := req.param
   io.msInfo.bits.mergeA := mergeA
   io.msInfo.bits.w_releaseack := state.w_releaseack
+  io.msInfo.bits.w_replResp := !state.w_replResp
   val sideCanNestC = Mux(!state.w_pprobeacklast || !state.w_pprobeack,
     Mux(dirResult.meta(hitSide).compressed, UIntToOH(hitSide, 2), "b11".U),
     Mux(!state.w_rprobeacklast(0) && !dirResult.meta(0).compressed, "b11".U, (~Cat(state.w_rprobeacklast.reverse)).asUInt)
   )
-  io.msInfo.bits.sideCannotNestC := (~sideCanNestC).asUInt
+  val sideCannotNestC = WireInit(0.U(2.W))
+  when (!state.w_pprobeacklast || !state.w_pprobeack || mp_grant_valid && dirResult.hit) {
+    sideCannotNestC := Mux(dirResult.meta(hitSide).compressed, UIntToOH((~hitSide).asUInt, 2), "b00".U)
+  }.elsewhen(!state.w_rprobeacklast(0) || !state.w_rprobeacklast(1) || mp_grant_valid && dirResult.hit) {
+    sideCannotNestC := Mux(!state.w_rprobeacklast(0) && !dirResult.meta(0).compressed, "b00".U, Cat(state.w_rprobeacklast.reverse))
+  }.otherwise {
+    sideCannotNestC := 0.U
+  }
+  io.msInfo.bits.sideCannotNestC := sideCannotNestC | RegNextN(sideCannotNestC, 1) | RegNextN(sideCannotNestC, 2)
   io.msInfo.bits.sideValidMask := sideValidMask
 
   assert(!(c_resp.valid && !io.status.bits.w_c_resp(0) && !io.status.bits.w_c_resp(1)))
@@ -661,23 +674,25 @@ class MSHR(implicit p: Parameters) extends L2Module {
   // for A miss, only when replResp do we finally choose a way, allowing nested C
   // for A-alias, always allowing nested C (state.w_replResp === true.B)
   // 是等待nest的
+  val hasNestwb = VecInit(false.B, false.B)
   for (i <- 0 until 2) {
-    val nestedwb_match = req_valid && meta(i).state =/= INVALID &&
+    hasNestwb(i) := req_valid && meta(i).state =/= INVALID &&
       // TODO: consider remove this
       sideCanNestC(i) &&
       dirResult.set === io.nestedwb.set &&
       dirResult.tag(i) === io.nestedwb.tag &&
       state.w_replResp
 
-    when (nestedwb_match) {
+    when (hasNestwb(i)) {
       when (io.nestedwb.c_set_dirty) {
         meta(i).dirty := true.B
       }
     }
     // let nested C write ReleaseData to the MSHRBuffer entry of this MSHR id
     // This is the VALID signal for releaseBuf.io.w(2)
-    io.nestedwbData(i) := nestedwb_match && io.nestedwb.c_set_dirty
+    io.nestedwbData(i) := hasNestwb(i) && io.nestedwb.c_set_dirty
   }
+  io.hasNestwb := hasNestwb.asUInt.orR
 
   dontTouch(state)
 

@@ -172,7 +172,7 @@ class MSHRInfo(implicit p: Parameters) extends L2Bundle {
   val willFree = Bool()
 
   // to block Acquire for to-be-replaced data until Release done (indicated by ReleaseAck received)
-  val needRelease = Bool()
+  val needRelease = UInt(2.W)
   // MSHR needs to send ReleaseTask but has not in mainpipe s3, RefillTask in MP need to block
   // PS: ReleaseTask is also responsible for writing refillData to DS when A miss
   val blockRefill = Bool()
@@ -192,6 +192,7 @@ class MSHRInfo(implicit p: Parameters) extends L2Bundle {
   val param = UInt(3.W)
   val mergeA = Bool() // whether the mshr already merge an acquire(avoid alias merge)
   val w_releaseack = Vec(2, Bool())
+  val w_replResp = Bool()
 }
 
 class RespInfoBundle(implicit p: Parameters) extends L2Bundle {
@@ -215,6 +216,7 @@ class FSMState(implicit p: Parameters) extends L2Bundle {
   val s_acquire = Bool()  // acquire downwards
   val s_rprobe = Vec(2, Bool())   // probe upwards, caused by replace
   val s_pprobe = Bool()   // probe upwards, casued by probe
+  val s_gprobe = Bool()   // probe caused by get, only to set probe param to ToB
   val s_release = Vec(2, Bool())  // release downwards
   val s_probeack = Bool() // respond probeack downwards
   val s_refill = Bool()   // respond grant upwards
