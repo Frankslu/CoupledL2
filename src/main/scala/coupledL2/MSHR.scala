@@ -700,13 +700,16 @@ class MSHR(implicit p: Parameters) extends L2Module {
   // time stamp
   // if (cacheParams.enablePerf) {
     val acquire_ts = RegEnable(timer, false.B, io.tasks.source_a.fire)
-    val probe_ts = RegEnable(timer, false.B, io.tasks.source_b.fire)
-    val release_ts = RegEnable(timer, false.B, !mp_grant_valid && mp_release_valid && io.tasks.mainpipe.ready)
+    val probe1_ts = RegEnable(timer, false.B, io.tasks.source_b.fire && (state.s_pprobe || state.s_rprobe(0)))
+    val probe2_ts = RegEnable(timer, false.B, io.tasks.source_b.fire && state.s_rprobe(1) && !(state.s_pprobe || state.s_rprobe(0)))
+    val release1_ts = RegEnable(timer, false.B, !mp_grant_valid && mp_release_valid && io.tasks.mainpipe.ready && state.s_release(0))
+    val release2_ts = RegEnable(timer, false.B, !mp_grant_valid && mp_release_valid && io.tasks.mainpipe.ready && state.s_release(1) && !state.s_release(0))
     val acquire_period = IO(Output(UInt(64.W)))
     val probe_period = IO(Output(UInt(64.W)))
     val release_period = IO(Output(UInt(64.W)))
     acquire_period := timer - acquire_ts
-    probe_period := timer - probe_ts
-    release_period := timer - release_ts
+    probe_period := timer - Mux(state.w_pprobeacklast || state.w_pprobeackfirst || state.w_rprobeacklast(0) ||
+      state.w_rprobeackfirst(0), probe1_ts, probe2_ts)
+    release_period := timer - Mux(state.w_releaseack(0), release1_ts, release2_ts)
   // }
 }

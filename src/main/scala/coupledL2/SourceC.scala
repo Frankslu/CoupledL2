@@ -230,7 +230,7 @@ class SourceC(implicit p: Parameters) extends L2Module {
   val compressible = compressor.io.out.valid && compressor.io.out.bits.compressible
   val uncompressible = compressor.io.out.valid && !compressor.io.out.bits.compressible
   val compressedLength = compressor.io.out.bits.length
-  XSPerfAccumulate(cacheParams, "ReleaseData_Compressible", compressible)
-  XSPerfAccumulate(cacheParams, "ReleaseData_Compressible", uncompressible)
-  XSPerfHistogram(cacheParams, "ReleaseData_CompressLength", compressedLength, compressor.io.out.valid, 48, 560, 4)
+  XSPerfAccumulate(cacheParams, "ReleaseData2L3_Compressible", compressible)
+  XSPerfAccumulate(cacheParams, "ReleaseData2L3_Compressible", uncompressible)
+  XSPerfHistogram(cacheParams, "ReleaseData2L3_CompressLength", compressedLength, compressor.io.out.valid, 32, 512+1, 32, true, true)
 }

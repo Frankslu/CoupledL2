@@ -353,16 +353,16 @@ class GrantBuffer(implicit p: Parameters) extends L2Module {
     // pftRespQueue is about to be full, and using back pressure to block All MainPipe Entrance
     // which can SERIOUSLY affect performance, should consider less drastic prefetch policy
     XSPerfAccumulate(cacheParams, "WARNING_pftRespQueue_about_to_full", noSpaceForMSHRPft.getOrElse(false.B))
+    
+    val compressor = Module(new CompressUnit)
+    compressor.io.in.valid := io.d.fire && Seq(GrantData, AccessAckData).map(_ === io.d.bits.opcode).reduce(_ || _)
+    compressor.io.in.bits := io.d.bits.data
+    compressor.io.out.ready := true.B
+    val compressible = compressor.io.out.valid && compressor.io.out.bits.compressible
+    val uncompressible = compressor.io.out.valid && !compressor.io.out.bits.compressible
+    val compressedLength = compressor.io.out.bits.length
+    XSPerfAccumulate(cacheParams, "DataToL1_Compressible", compressible)
+    XSPerfAccumulate(cacheParams, "DataToL1_Compressible", uncompressible)
+    XSPerfHistogram(cacheParams, "DataToL1_CompressLength", compressedLength, compressor.io.out.valid, 32, 512 + 1, 32, true, true)
   }
-
-  val compressor = Module(new CompressUnit)
-  compressor.io.in.valid := io.d.fire && Seq(GrantData, AccessAckData).map(_ === io.d.bits.opcode).reduce(_ || _)
-  compressor.io.in.bits := io.d.bits.data
-  compressor.io.out.ready := true.B
-  val compressible = compressor.io.out.valid && compressor.io.out.bits.compressible
-  val uncompressible = compressor.io.out.valid && !compressor.io.out.bits.compressible
-  val compressedLength = compressor.io.out.bits.length
-  XSPerfAccumulate(cacheParams, "DataToL1_Compressible", compressible)
-  XSPerfAccumulate(cacheParams, "DataToL1_Compressible", uncompressible)
-  XSPerfHistogram(cacheParams, "DataToL1_CompressLength", compressedLength, compressor.io.out.valid, 48, 560, 4)
 }

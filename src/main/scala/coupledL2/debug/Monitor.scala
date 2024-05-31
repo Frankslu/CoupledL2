@@ -22,9 +22,17 @@ class MainpipeMoni(implicit p: Parameters) extends L2Bundle {
   val replResult = new ReplacerResult
   val way = UInt((wayBits + 1).W)
   val nestC = Bool()
+  val dataW = Bool()
+  val dataR = Bool()
+  val Wcompressible = Bool()
+  val Rcompressible = Bool()
 }
 
 class CPL2S3Info(implicit p: Parameters) extends L2Bundle {
+  // val dataW = Bool()
+  // val dataR = Bool()
+  // val Wcompressible = Bool()
+  // val Rcompressible = Bool()
   val mshrTask = Bool()
 
   val channel = UInt(3.W)
@@ -120,6 +128,10 @@ class Monitor(implicit p: Parameters) extends L2Module {
     // s3Info.metaWway := VecInit(mp.metaW_s3.map(x => OHToUInt(x.bits.wayOH)))
     s3Info.metaWway := mp.metaW_s3.map(x => OHToUInt(x.bits.wayOH)).reduce(_ | _)
     s3Info.retry := mp.retry
+    // s3Info.dataR := mp.dataR
+    // s3Info.dataW := mp.dataW
+    // s3Info.Wcompressible := mp.Wcompressible
+    // s3Info.Rcompressible := mp.Rcompressible
 
     table.log(s3Info, s3_valid, s"L2${hartId}_${p(SliceIdKey)}", clock, reset)
   }

@@ -880,9 +880,9 @@ class MainPipe(implicit p: Parameters) extends L2Module{
   XSPerfAccumulate(cacheParams, "b_req_miss", miss_s3 && req_s3.fromB)
 
   XSPerfHistogram(cacheParams, "a_req_access_way", perfCnt = dirResult_s3.way,
-    enable = task_s3.valid && !mshr_req_s3 && req_s3.fromA, start = 0, stop = cacheParams.ways, step = 1)
+    enable = task_s3.valid && !mshr_req_s3 && req_s3.fromA, start = 0, stop = cacheParams.ways * 2, step = 1)
   XSPerfHistogram(cacheParams, "a_req_hit_way", perfCnt = dirResult_s3.way,
-    enable = hit_s3 && req_s3.fromA, start = 0, stop = cacheParams.ways, step = 1)
+    enable = hit_s3 && req_s3.fromA, start = 0, stop = cacheParams.ways * 2, step = 1)
   XSPerfHistogram(cacheParams, "a_req_miss_way_choice", perfCnt = dirResult_s3.way,
     enable = miss_s3 && req_s3.fromA, start = 0, stop = cacheParams.ways, step = 1)
 
@@ -919,35 +919,72 @@ class MainPipe(implicit p: Parameters) extends L2Module{
   XSPerfAccumulate(cacheParams, "early_prefetch", hitMeta_s3(hitSide_s3).prefetch.getOrElse(false.B) && !hitMeta_s3(hitSide_s3).accessed && !dirResult_s3.hit && task_s3.valid)
 
   // compression
-  val req_write_ds = wen_c || need_data_c ||
-    mshr_refill_s3 && req_s3.dsWen ||
-    mshr_probeack_s3 && req_s3.dsWen
+//  val req_write_ds = (wen_c && !io.fromMSHRCtl.nestCData || need_data_c && !io.fromMSHRCtl.nestCData ||
+//    wen_refill || need_data_missRefill || need_data_hitRefill ||
+//    wen_probeAck || need_data_mshr_pback) && task_s3.valid
+  val req_write_ds = task_s3.valid && (wen || ren && !need_data_a && !need_data_b)
   val compressed_len = compressor.io.out.bits.length
-  XSPerfAccumulate(cacheParams, "wdata_compressible", compressor.io.out.bits.compressible && req_write_ds)
-  XSPerfAccumulate(cacheParams, "wdata_uncompressible", !compressor.io.out.bits.compressible && req_write_ds)
-  XSPerfHistogram(cacheParams, "compressed_length", compressed_len, req_write_ds, 48, 560, 4)
+  XSPerfAccumulate(cacheParams, "wData_compressible", compressor.io.out.bits.compressible && req_write_ds)
+  XSPerfAccumulate(cacheParams, "wData_unCompressible", !compressor.io.out.bits.compressible && req_write_ds)
+  XSPerfHistogram(cacheParams, "compressed_length", compressed_len, req_write_ds, 32, 512 + 1, 32, true, true)
+  XSPerfAccumulate(cacheParams, "total_release_data", (wen_c || need_data_c) && !io.fromMSHRCtl.nestCData && task_s3.valid)
+  XSPerfAccumulate(cacheParams, "release_data_evict", need_data_c && task_s3.valid)
+  XSPerfAccumulate(cacheParams, "total_miss_refill", (wen && wen_refill && refill_for_miss || need_data_missRefill) && task_s3.valid)
+  XSPerfAccumulate(cacheParams, "miss_refill_evict", need_data_missRefill && task_s3.valid)
+  XSPerfAccumulate(cacheParams, "total_hit_refill", (wen && wen_refill && !refill_for_miss || need_data_hitRefill) && task_s3.valid)
+  XSPerfAccumulate(cacheParams, "hit_refill_evict", need_data_hitRefill && task_s3.valid)
+  XSPerfAccumulate(cacheParams, "total_probeAck", (wen && wen_probeAck || need_data_mshr_pback) && task_s3.valid)
+  XSPerfAccumulate(cacheParams, "probeAck_evict", need_data_mshr_pback && task_s3.valid)
 
-  class CompressInfo extends L2Bundle {
+
+  val req_read_ds = task_s3.valid && !mshr_req_s3 && (req_s3.fromA || req_s3.fromB) &&
+    dirResult_s3.hit && !need_mshr_s3 && 
+    io.toDS.req_s3.valid && !io.toDS.req_s3.bits.wen
+
+  class CompressInfo(implicit p: Parameters) extends L2Bundle {
     val sset = UInt(setBits.W)
     val way = UInt((wayBits + 1).W)
+
+    // record read not caused by 
+    val ren = Bool()
+    val rCompressible = Bool()
+
+    // record release data or mshr task write
+    val wen = Bool()
     val wdataCompressible = Bool()
     val wdataLength = UInt((log2Ceil(blockBytes * 8) + 2).W)
+    val refillRepl = Bool()
+    val refillOneCompressed = Bool()
+    val refillTwoCompressed = Bool()
+    val refillOneUnCompressed = Bool()
+    val needEvict = Bool() // evict another block in same cache line
   }
 
   if (cacheParams.enableMonitor && !cacheParams.FPGAPlatform) {
     val hartId = if (cacheParams.hartIds.length == 1) cacheParams.hartIds.head else 0
-    val table = ChiselDB.createTable(s"L2CMP", new CompressInfo, basicDB = true)
+    val table = ChiselDB.createTable(s"L2WR", new CompressInfo, basicDB = true)
     val compressInfo = Wire(new CompressInfo)
     compressInfo.sset := req_s3.set
     compressInfo.way := ParallelPriorityMux(Seq(
-      (wen_c || need_data_c) -> dirResult_s3.way,
-      (mshr_refill_s3 && req_s3.dsWen) -> replResp_s3.way,
-      (mshr_probeack_s3 && req_s3.dsWen) -> req_s3.way
+      !mshr_req_s3 -> dirResult_s3.way,
+      mshr_refill_s3 -> replResp_s3.way,
+      mshr_probeack_s3 -> req_s3.way
     ))
+    compressInfo.wen := req_write_ds
     compressInfo.wdataCompressible := compressor.io.out.bits.compressible
     compressInfo.wdataLength := compressed_len
+    compressInfo.refillRepl := need_data_missRefill
+    compressInfo.refillOneCompressed := Seq("b01".U, "b10".U)
+      .map(mask => mask === replResp_s3.releaseTask && mask === missRefillEvictSide).reduce(_ | _) && io.replResp.valid
+    compressInfo.refillOneUnCompressed := (replResp_s3.releaseTask === "b01".U && missRefillEvictSide === "b11".U) &&
+      io.replResp.valid
+    compressInfo.refillTwoCompressed := replResp_s3.releaseTask === "b11".U && io.replResp.valid
+    compressInfo.needEvict := need_data_hitRefill || need_data_mshr_pback || need_data_c && !io.fromMSHRCtl.nestCData
 
-    table.log(compressInfo, req_write_ds, s"L2${hartId}_${p(SliceIdKey)}", clock, reset)
+    compressInfo.ren := req_read_ds
+    compressInfo.rCompressible := io.toDS.req_s3.bits.compressible
+
+    table.log(compressInfo, (req_write_ds || req_read_ds) && task_s3.valid, s"L2${hartId}_${p(SliceIdKey)}", clock, reset)
   }
   /* ===== Monitor ===== */
   io.toMonitor.task_s2 := task_s2
@@ -966,4 +1003,8 @@ class MainPipe(implicit p: Parameters) extends L2Module{
     mshr_req_s3 -> req_s3.way
   ))
   io.toMonitor.nestC := io.fromMSHRCtl.nestC
+  io.toMonitor.dataR := io.toDS.req_s3.valid && !io.toDS.req_s3.bits.wen
+  io.toMonitor.dataW := io.toDS.req_s3.valid && io.toDS.req_s3.bits.wen
+  io.toMonitor.Rcompressible := io.toDS.req_s3.bits.compressible
+  io.toMonitor.Wcompressible := io.toDS.req_s3.bits.wmask =/= 3.U
 }
