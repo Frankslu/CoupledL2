@@ -282,14 +282,14 @@ class Directory(implicit p: Parameters) extends L2Module {
   val rrip_hit_s3 = Mux(refillReqValid_s3, false.B, hit_s3)
   // origin-bit marks whether the data_block is reused
   val origin_bit_opt = if(random_repl) None else
-    Some(Module(new SRAMTemplate(Bool(), sets, ways, singlePort = true)))
+    Some(Module(new SRAMTemplate(Bool(), sets, ways, singlePort = true, shouldReset = true)))
   val origin_bits_r = origin_bit_opt.get.io.r(io.read.fire, io.read.bits.set).resp.data
   val origin_bits_hold = Wire(Vec(ways, Bool()))
   origin_bits_hold := HoldUnless(origin_bits_r, RegNext(io.read.fire, false.B))
   origin_bit_opt.get.io.w(
-      replacerWen,
-      rrip_hit_s3,
-      req_s3.set,
+      !resetFinish || replacerWen,
+      Mux(resetFinish, rrip_hit_s3, false.B),
+      Mux(resetFinish, req_s3.set, resetIdx),
       UIntToOH(touch_way_s3)
   )
 
@@ -303,7 +303,7 @@ class Directory(implicit p: Parameters) extends L2Module {
                     req_s3.refill
                     )
     
-    val next_state_s3 = repl.get_next_state(repl_state_s3, touch_way_s3, rrip_hit_s3, req_type)
+    val next_state_s3 = repl.get_next_state(repl_state_s3, touch_way_s3, rrip_hit_s3, inv, req_type)
     val repl_init = Wire(Vec(ways, UInt(2.W)))
     repl_init.foreach(_ := 2.U(2.W))
     replacer_sram_opt.get.io.w(
@@ -345,7 +345,7 @@ class Directory(implicit p: Parameters) extends L2Module {
                     Mux(match_b, true.B,
                       Mux(PSEL(9)===0.U, false.B, true.B)))    // false.B - srrip, true.B - brrip
 
-    val next_state_s3 = repl.get_next_state(repl_state_s3, touch_way_s3, rrip_hit_s3, repl_type, req_type)
+    val next_state_s3 = repl.get_next_state(repl_state_s3, touch_way_s3, rrip_hit_s3, inv, repl_type, req_type)
 
     val repl_init = Wire(Vec(ways, UInt(2.W)))
     repl_init.foreach(_ := 2.U(2.W))
