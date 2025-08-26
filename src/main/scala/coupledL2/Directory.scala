@@ -24,6 +24,7 @@ import coupledL2.utils._
 import utility.{ParallelPriorityMux, RegNextN, XSPerfAccumulate, Code, SRAMTemplate}
 import org.chipsalliance.cde.config.Parameters
 import coupledL2.prefetch.PfSource
+import coupledL2.wpu.{WPUParameters, WPURead, WPUUpdate, WPUWrapper}
 import freechips.rocketchip.tilelink.TLMessages._
 
 class MetaEntry(implicit p: Parameters) extends L2Bundle {
@@ -78,6 +79,8 @@ class DirRead(implicit p: Parameters) extends L2Bundle {
   // when flush l2
   val cmoAll = Bool()
   val cmoWay = UInt(wayBits.W)
+
+  val toWPU_s1 = Output(ValidIO(new WPURead()))
 }
 
 class DirResult(implicit p: Parameters) extends L2Bundle {
@@ -122,6 +125,7 @@ class Directory(implicit p: Parameters) extends L2Module {
     val replResp = ValidIO(new ReplacerResult)
     // used to count occWays for Grant to retry
     val msInfo = Vec(mshrsAll, Flipped(ValidIO(new MSHRInfo)))
+    val toWPUUpd = Input(ValidIO(new WPUUpdate()))
   })
 
   def invalid_way_sel(metaVec: Seq[MetaEntry], repl: UInt) = {
@@ -432,6 +436,33 @@ class Directory(implicit p: Parameters) extends L2Module {
   }
   when(!resetFinish) {
     resetIdx := resetIdx - 1.U
+  }
+
+  {
+    for {
+      name <- List("mru", "mmru", "mru1", "mmru1", "utag1", "utag2", "utag3", "utag4")
+      updLatency <- 0 to 2
+    } yield Module(new WPUWrapper(WPUParameters(name), updLatency).suggestName(s"${name}WPUWrapper_${updLatency}"))
+  }.foreach { wpu =>
+    wpu.in.fromMPS1 := io.read.bits.toWPU_s1
+    val res = RegNextN(wpu.out.toMPS1, 2)
+
+    val upd = Wire(new WPUUpdate())
+    upd.isReplace := false.B
+    upd.isEvict := false.B
+    upd.set := RegNextN(io.read.bits.toWPU_s1, 2).bits.set
+    upd.tag := RegNextN(io.read.bits.toWPU_s1, 2).bits.tag
+    upd.predWay := res.bits.predWay
+    upd.predHit := res.bits.predHit
+    upd.actualWay := io.resp.bits.way
+    upd.actualHit := io.resp.bits.hit
+
+    wpu.in.fromMPS3.bits := Mux(io.toWPUUpd.valid, io.toWPUUpd.bits, upd)
+    wpu.in.fromMPS3.valid := res.valid | io.toWPUUpd.valid
+
+    when (io.toWPUUpd.valid) {
+      assert(wpu.in.fromMPS3.bits.isEvict & !wpu.in.fromMPS3.bits.isReplace | !wpu.in.fromMPS3.bits.isEvict & wpu.in.fromMPS3.bits.isReplace)
+    }
   }
 
   XSPerfAccumulate("dirRead_cnt", io.read.fire)

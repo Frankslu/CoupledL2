@@ -28,6 +28,7 @@ import coupledL2._
 import coupledL2.prefetch.{PrefetchTrain, PfSource}
 import coupledL2.tl2chi.CHICohStates._
 import coupledL2.MetaData._
+import coupledL2.wpu.WPUUpdate
 
 class MainPipe(implicit p: Parameters) extends TL2CHIL2Module with HasCHIOpcodes with HasPerfEvents {
   val io = IO(new Bundle() {
@@ -116,6 +117,8 @@ class MainPipe(implicit p: Parameters) extends TL2CHIL2Module with HasCHIOpcodes
     /* l2 flush (CMO All) */
     val cmoAllBlock = Option.when(cacheParams.enableL2Flush) (Input(Bool()))
     val cmoLineDone = Option.when(cacheParams.enableL2Flush) (Output(Bool()))
+
+    val toWPU_s3 = Output(ValidIO(new WPUUpdate()))
   })
 
   require(chiOpt.isDefined)
@@ -600,6 +603,7 @@ class MainPipe(implicit p: Parameters) extends TL2CHIL2Module with HasCHIOpcodes
   io.tagWReq.valid := task_s3.valid && req_s3.tagWen && mshr_refill_s3 && !retry
   io.tagWReq.bits.set := req_s3.set
   io.tagWReq.bits.way := Mux(mshr_refill_s3 && req_s3.replTask, io.replResp.bits.way, req_s3.way)
+//  io.tagWReq.bits.way := io.replResp.bits.way
   io.tagWReq.bits.wtag := req_s3.tag
 
   sink_resp_s3_b_metaWen := metaW_valid_s3_b
@@ -1091,6 +1095,37 @@ class MainPipe(implicit p: Parameters) extends TL2CHIL2Module with HasCHIOpcodes
   }
 
   XSPerfAccumulate("early_prefetch", meta_s3.prefetch.getOrElse(false.B) && !meta_s3.accessed && !dirResult_s3.hit && task_s3.valid)
+
+  val wpuReplUpd = Wire(Valid(new WPUUpdate()))
+  assert(wpuReplUpd.valid === io.tagWReq.valid)
+  wpuReplUpd.valid := task_s3.valid & io.replResp.valid & !io.replResp.bits.retry & io.tagWReq.valid & req_s3.replTask
+  wpuReplUpd.bits.isReplace := true.B
+  wpuReplUpd.bits.isEvict := false.B
+  wpuReplUpd.bits.actualWay := io.replResp.bits.way
+  wpuReplUpd.bits.set := io.replResp.bits.set
+  wpuReplUpd.bits.tag := req_s3.tag
+
+  // ignore
+  wpuReplUpd.bits.actualHit := false.B
+  wpuReplUpd.bits.predHit := false.B
+  wpuReplUpd.bits.predWay := 0.U
+
+  val wpuEvictUpd = Wire(Valid(new WPUUpdate()))
+  wpuEvictUpd.valid := task_s3.valid & io.metaWReq.valid & io.metaWReq.bits.wmeta.state === INVALID
+  wpuEvictUpd.bits.isReplace := false.B
+  wpuEvictUpd.bits.isEvict := true.B
+  wpuEvictUpd.bits.actualWay := OHToUInt(io.metaWReq.bits.wayOH)
+  wpuEvictUpd.bits.set := io.metaWReq.bits.set
+
+  // ignore
+  wpuEvictUpd.bits.actualHit := false.B
+  wpuEvictUpd.bits.predHit := false.B
+  wpuEvictUpd.bits.predWay := 0.U
+  wpuEvictUpd.bits.tag := 0.U
+
+  io.toWPU_s3.valid := wpuReplUpd.valid | wpuEvictUpd.valid
+  io.toWPU_s3.bits := Mux(wpuReplUpd.valid, wpuReplUpd.bits, wpuEvictUpd.bits)
+  assert(!(wpuReplUpd.valid & wpuEvictUpd.valid))
 
   /* ===== Hardware Performance Monitor ===== */
   val perfEvents = Seq(

@@ -25,6 +25,7 @@ import freechips.rocketchip.tilelink.TLMessages._
 import org.chipsalliance.cde.config.Parameters
 import coupledL2.tl2tl._
 import coupledL2.tl2chi._
+import coupledL2.wpu.WPURead
 
 class RequestArb(implicit p: Parameters) extends L2Module
   with HasCHIOpcodes {
@@ -187,6 +188,11 @@ class RequestArb(implicit p: Parameters) extends L2Module
   io.dirRead_s1.bits.mshrId := task_s1.bits.mshrId
   io.dirRead_s1.bits.cmoAll := task_s1.bits.cmoAll
   io.dirRead_s1.bits.cmoWay := task_s1.bits.way
+  val toWPU = Wire(Valid(new WPURead()))
+  toWPU.bits.set := task_s1.bits.set
+  toWPU.bits.tag := task_s1.bits.tag
+  toWPU.valid := !task_s1.bits.mshrTask & task_s1.bits.fromA & (task_s1.bits.opcode === Get | task_s1.bits.opcode === AcquireBlock) & io.dirRead_s1.valid
+  io.dirRead_s1.bits.toWPU_s1 := toWPU
 
   // block same-set A req
   io.s1Entrance.valid := mshr_task_s1.valid && s2_ready && mshr_task_s1.bits.metaWen || io.sinkC.fire || io.sinkB.fire
